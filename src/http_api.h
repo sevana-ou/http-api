@@ -7,6 +7,8 @@
 #include <memory>
 #include <thread>
 #include <map>
+#include <mutex>
+#include <atomic>
 
 #include <event2/event.h>
 #include <event2/http.h>
@@ -42,6 +44,7 @@ private:
     event_base* mIoContext = nullptr;
     std::shared_ptr<std::thread> mWorkerThread;
     request_get_handler mGetHandler;
+    std::atomic_bool mTerminated;
 
     void worker();
     static void process_callback(struct evhttp_request *request, void *arg);

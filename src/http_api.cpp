@@ -4,6 +4,8 @@
 #include <event2/http_struct.h>
 #include <event2/keyvalq_struct.h>
 
+#include <signal.h>
+
 void broken_pipe(int signum)
 {
     // Just ignore signal. It is called when pipe (socket connection) is broken and could terminate app.
@@ -34,6 +36,7 @@ void http_server::start()
     if (mIoContext)
         return;
 
+    mTerminated = false;
     signal(SIGPIPE, broken_pipe);
 
     mIoContext = event_base_new();
@@ -42,6 +45,8 @@ void http_server::start()
     evhttp_set_gencb(mHttpContext, &http_server::process_callback, this);
 
     mWorkerThread = std::make_shared<std::thread>(&http_server::worker, this);
+    // Thread has no need to be joined - it is controlled via libevent API
+    // mWorkerThread->detach();
 }
 
 void http_server::stop()
@@ -50,6 +55,7 @@ void http_server::stop()
         return;
 
     // Exit from worker thread
+    mTerminated = true;
     event_base_loopbreak(mIoContext);
 
     if (mHttpContext)
@@ -112,7 +118,10 @@ void http_server::send_error(void *ctx, int code, const std::string &reason)
 
 void http_server::worker()
 {
-    event_base_dispatch(mIoContext);
+    while (!mTerminated)
+    {
+        event_base_dispatch(mIoContext);
+    }
 }
 
 void http_server::process_callback(struct evhttp_request *request, void *arg)
@@ -129,7 +138,7 @@ void http_server::process_request(evhttp_request *request)
 
     // Parse the query for later lookups
     const char* uri_text = evhttp_request_get_uri(request);
-    const struct evhttp_uri* uri = evhttp_uri_parse(uri_text);
+    struct evhttp_uri* uri = evhttp_uri_parse(uri_text);
     evhttp_cmd_type cmd = evhttp_request_get_command(request);
     request_info ri;
     ri.mPath = evhttp_uri_get_path(uri);
@@ -159,6 +168,7 @@ void http_server::process_request(evhttp_request *request)
         // Send default answer
         evhttp_send_error(request, HTTP_BADMETHOD, "Method not allowed.");
     }
+    evhttp_uri_free(uri);
 }
 
 // ------------ http_client --------------

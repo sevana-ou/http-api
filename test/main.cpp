@@ -5,7 +5,7 @@
 int main(int argc, const char** argv)
 {
     // Run server
-    std::atomic_bool exit_flag;
+    std::atomic_bool exit_flag; exit_flag = false;
     dashboard_start(8080, exit_flag);
 
     // Wait for 60 seconds & exit
