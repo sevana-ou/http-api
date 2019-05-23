@@ -2,7 +2,7 @@
 
 #include <iostream>
 
-int main(int argc, char** argv)
+int main(int /*argc*/, char** /*argv*/)
 {
     http_client client;
     std::atomic_bool exit_flag(false);
