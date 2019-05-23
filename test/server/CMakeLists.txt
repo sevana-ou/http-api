@@ -17,9 +17,9 @@ endif()
 
 set (CMAKE_CXX_STANDARD 11)
 set (CMAKE_CXX_STANDARD_REQUIRED 11)
-set (SRC dashboard.cpp main.cpp ../src/http_api.cpp)
-set (HDR dashboard.h ../src/http_api.h)
-include_directories(/usr/local/include ../src)
+set (SRC dashboard.cpp main.cpp ../../src/http_api.cpp)
+set (HDR dashboard.h ../../src/http_api.h)
+include_directories(/usr/local/include ../../src)
 
 add_executable(http_api_test ${SRC})
 link_directories(/usr/local/lib)
