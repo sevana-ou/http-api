@@ -3,8 +3,10 @@
 #include <event2/buffer.h>
 #include <event2/http_struct.h>
 #include <event2/keyvalq_struct.h>
+#include <event2/thread.h>
 
 #include <signal.h>
+#include <iostream>
 
 void broken_pipe(int signum)
 {
@@ -39,6 +41,10 @@ void http_server::start()
     mTerminated = false;
     signal(SIGPIPE, broken_pipe);
 
+#if defined(TARGET_LINUX) || defined(TARGET_OSX)
+    evthread_use_pthreads();
+#endif
+
     mIoContext = event_base_new();
     mHttpContext = evhttp_new(mIoContext);
     evhttp_bind_socket(mHttpContext, "0.0.0.0", mPort);
@@ -64,13 +70,13 @@ void http_server::stop()
         mHttpContext = nullptr;
     }
 
-    event_base_free(mIoContext); mIoContext = nullptr;
     if (mWorkerThread)
     {
         if (mWorkerThread->joinable())
             mWorkerThread->join();
         mWorkerThread.reset();
     }
+    event_base_free(mIoContext); mIoContext = nullptr;
 }
 
 void http_server::set_handler(const request_get_handler& handler)
