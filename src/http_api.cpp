@@ -246,6 +246,10 @@ http_client::ctx http_client::get(const std::string& url, response_handler handl
     r->chunk_cb = &process_data_callback;
     r->error_cb = &process_error_callback;
 
+    // Add Host: header
+    evhttp_add_header(evhttp_request_get_output_headers(r), "Host", addr.first.c_str());
+    evhttp_add_header(evhttp_request_get_output_headers(r), "Connection", "Close");
+
     mRequests[r] = std::pair<response_handler, response_info>(handler, response_info());
 
     // Run request
