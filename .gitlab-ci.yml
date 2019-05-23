@@ -1,15 +1,17 @@
+---
 build_exe:
-    script:
-        - mkdir -p build
-        - cd build
-        - cmake ../test/server
-        - cmake --build .
-        - cd ..
-        - rm -rf build
-        - mkdir -p build
-        - cmake ../test/client
-        - cmake --build .
-        - cd ..
-        - rm -rf build
-        - curl -X POST -H 'Content-type: application/json' --data '{\"text\":\"http api library builds ok.\"}' https://hooks.slack.com/services/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
-        
+  script:
+    - "mkdir -p build"
+    - "cd build"
+    - "cmake ../test/server"
+    - "cmake --build ."
+    - "cd .."
+    - "rm -rf build"
+    - "mkdir -p build"
+    - "cmake ../test/client"
+    - "cmake --build ."
+    - "cd .."
+    - "rm -rf build"
+    -
+      ? "curl -X POST -H 'Content-type"
+      : "application/json' --data '{\\\"text\\\":\\\"http api library builds ok.\\\"}' https://hooks.slack.com/services/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"
