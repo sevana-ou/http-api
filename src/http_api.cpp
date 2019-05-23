@@ -6,6 +6,7 @@
 #include <event2/thread.h>
 
 #include <signal.h>
+#include <string.h>
 #include <iostream>
 
 void broken_pipe(int signum)
@@ -180,19 +181,37 @@ void http_server::process_request(evhttp_request *request)
 // ------------ http_client --------------
 http_client::http_client()
 {
+#if defined(TARGET_LINUX) || defined(TARGET_OSX)
+    evthread_use_pthreads();
+#endif
+    signal(SIGPIPE, broken_pipe);
+
+    mTerminated = false;
     mIoContext = event_base_new();
-    mWorkerThread = std::make_shared<std::thread>(&http_client::worker, this);
+    if (mIoContext)
+        mWorkerThread = std::make_shared<std::thread>(&http_client::worker, this);
 }
 
 http_client::~http_client()
 {
+    mTerminated = true;
+    if (mIoContext)
+        event_base_loopbreak(mIoContext);
     if (mWorkerThread)
     {
         if (mWorkerThread->joinable())
         {
             mWorkerThread->join();
         }
+        mWorkerThread.reset();
     }
+
+    // Free all connections
+    for (auto& connIter: mConnections)
+        evhttp_connection_free(connIter.second);
+
+    if (mIoContext)
+        event_base_free(mIoContext);
 }
 
 http_client::ctx http_client::get(const std::string& url, response_handler handler)
@@ -201,23 +220,38 @@ http_client::ctx http_client::get(const std::string& url, response_handler handl
     if (!u)
         return nullptr;
 
-    // Find connection
-    std::pair<std::string, uint16_t> addr = {std::string(evhttp_uri_get_host(u)), evhttp_uri_get_port(u)};
+    // Find address of host
+    int port = evhttp_uri_get_port(u);
+    const char* scheme = evhttp_uri_get_scheme(u);
+    if (port == -1)
+    {
+        if (strstr(scheme, "https"))
+            port = 443;
+        else
+            port = 80;
+    }
+
+    std::pair<std::string, uint16_t> addr = {std::string(evhttp_uri_get_host(u)), static_cast<uint16_t>(port) };
     evhttp_connection* c = find_connection(addr);
 
     if (!c)
+    {
+        evhttp_uri_free(u);
         return nullptr;
+    }
 
     const char* path = evhttp_uri_get_path(u);
 
     evhttp_request* r = evhttp_request_new(&process_eof_callback, this);
-    r->cb = &process_data_callback;
-    r->cb_arg = this;
+    r->chunk_cb = &process_data_callback;
     r->error_cb = &process_error_callback;
+
     mRequests[r] = std::pair<response_handler, response_info>(handler, response_info());
 
     // Run request
     int code = evhttp_make_request(c, r, EVHTTP_REQ_GET, path ? path : "/");
+    evhttp_uri_free(u); u = nullptr;
+
     if (code)
         return nullptr;
 
@@ -226,7 +260,10 @@ http_client::ctx http_client::get(const std::string& url, response_handler handl
 
 void http_client::worker()
 {
-    event_base_dispatch(mIoContext);
+    while (!mTerminated)
+    {
+        event_base_dispatch(mIoContext);
+    }
 }
 
 void http_client::process_data_callback(struct evhttp_request *request, void *tag)
@@ -267,7 +304,6 @@ void http_client::process_request_data(evhttp_request* request)
         v.second.mChunk.resize(evbuffer_get_length(request->input_buffer));
         evbuffer_remove(request->input_buffer, const_cast<char*>(v.second.mChunk.data()), v.second.mChunk.size());
         v.second.mAllData += v.second.mChunk;
-        v.second.mCode = 200;
         try
         {
             v.first(*this, request, v.second);

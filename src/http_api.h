@@ -65,7 +65,7 @@ public:
 
     typedef void* ctx;
 
-    typedef std::function<void(http_client& client, void* ctx, const response_info& ri)> response_handler;
+    typedef std::function<void(http_client& client, ctx ctx, response_info& ri)> response_handler;
     ctx get(const std::string& url, response_handler handler);
 
 private:
@@ -75,6 +75,7 @@ private:
     std::map<evhttp_request*, std::pair<response_handler, response_info>> mRequests;
     std::shared_ptr<std::thread> mWorkerThread;
     std::mutex mMutex;
+    std::atomic_bool mTerminated;
 
     void worker();
     static void process_data_callback(evhttp_request* request, void* tag);
