@@ -12,5 +12,3 @@ build_exe:
     - "cmake --build ."
     - "cd .."
     - "rm -rf build"
-    - "msg=$(git log -1 --pretty=%B)"
-    - "curl -X POST -H 'Content-type: application/json' --data '{\"text\":\"HTTP I/O library builds ok. Commit msg: $msg\"}' https://hooks.slack.com/services/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"
