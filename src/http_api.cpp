@@ -218,7 +218,7 @@ void http_server::process_request(evhttp_request *request)
                 {
                     std::string::size_type p = content_type.find("boundary=");
                     if (p != std::string::npos)
-                        boundary = content_type.substr(p + strlen("boundary="));
+                        boundary = std::string("--") + content_type.substr(p + strlen("boundary="));
                 }
             }
             struct evbuffer* post_buffer = evhttp_request_get_input_buffer(request);
