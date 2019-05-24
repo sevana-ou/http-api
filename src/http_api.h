@@ -28,10 +28,16 @@ public:
     typedef std::multimap<std::string, std::string> request_params;
     struct request_info
     {
-        std::string mHost, mPath;
+        std::string mHost, mPath, mCommand;
     };
 
-    typedef std::function<void(http_server& server, void* ctx, const request_info& ri, const request_params& params)> request_get_handler;
+    struct fileinfo
+    {
+        std::string mName, mData;
+    };
+
+    typedef std::function<void(http_server& server, void* ctx, const request_info& ri,
+                               const request_params& params, const std::vector<fileinfo>& files)> request_get_handler;
 
     void set_handler(const request_get_handler& handler);
     void send_json(void* ctx, const std::string& body);

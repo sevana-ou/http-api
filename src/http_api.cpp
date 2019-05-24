@@ -14,6 +14,18 @@ void broken_pipe(int signum)
     // Just ignore signal. It is called when pipe (socket connection) is broken and could terminate app.
 }
 
+/*
+struct bufferevent *bev = evhttp_connection_get_bufferevent(req->evcon);
+if (bev) //Prio is initialized with 10 states in main
+    bufferevent_priority_set(bev, 9); // set to low priority
+struct evbuffer* post_buffer = evhttp_request_get_input_buffer(req);
+size_t body_size = evbuffer_get_length(post_buffer);
+// a multipart parser takes care of writing the
+// post_buffer content to a file
+// this takes a few seconds and after completing this
+// the status_cb is accessible again
+*/
+
 http_server::http_server()
 {
 
