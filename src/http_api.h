@@ -9,9 +9,18 @@
 #include <map>
 #include <mutex>
 #include <atomic>
+#include <vector>
 
-#include <event2/event.h>
-#include <event2/http.h>
+struct evhttp_request;
+struct evhttp;
+struct event_base;
+struct evhttp_connection;
+
+enum http_method
+{
+    Method_GET,
+    Method_POST
+};
 
 class http_server
 {
@@ -26,23 +35,29 @@ public:
     void stop();
 
     typedef std::multimap<std::string, std::string> request_params;
+    typedef std::map<std::string, std::string> request_headers;
+
     struct request_info
     {
-        std::string mHost, mPath, mCommand;
+        std::string mHost, mPath;
+        http_method mMethod;
+        request_headers mHeaders;
+        request_params mParams;
     };
 
     struct fileinfo
     {
         std::string mName, mData;
     };
+    typedef std::vector<fileinfo> filelist;
+    typedef void* ctx;
 
-    typedef std::function<void(http_server& server, void* ctx, const request_info& ri,
-                               const request_params& params, const std::vector<fileinfo>& files)> request_get_handler;
+    typedef std::function<void(http_server& server, ctx ctx, const request_info& ri)> request_get_handler;
 
     void set_handler(const request_get_handler& handler);
-    void send_json(void* ctx, const std::string& body);
-    void send_html(void* ctx, const std::string& body);
-    void send_error(void* ctx, int code, const std::string& reason = "");
+    void send_json(ctx ctx, const std::string& body);
+    void send_html(ctx ctx, const std::string& body);
+    void send_error(ctx ctx, int code, const std::string& reason = "");
 
 private:
     uint16_t mPort = 8080;
@@ -86,11 +101,11 @@ private:
     void worker();
     static void process_data_callback(evhttp_request* request, void* tag);
     static void process_eof_callback(evhttp_request* request, void* tag);
-    static void process_error_callback(evhttp_request_error err, void* tag);
+    static void process_error_callback(int err, void* tag);
 
     void process_request_data(evhttp_request* request);
     void process_request_eof(evhttp_request* request);
-    void process_request_error(evhttp_request* request, evhttp_request_error err);
+    void process_request_error(evhttp_request* request, int err);
 
     evhttp_connection* find_connection(const std::pair<std::string, uint16_t>& addr);
     std::pair<response_handler, response_info>* find_request(evhttp_request* request);

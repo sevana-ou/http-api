@@ -1,4 +1,7 @@
 #include "http_api.h"
+
+#include <event2/event.h>
+#include <event2/http.h>
 #include <event2/http.h>
 #include <event2/buffer.h>
 #include <event2/http_struct.h>
@@ -9,22 +12,12 @@
 #include <string.h>
 #include <iostream>
 
+#include "multipart_parser.h"
+
 void broken_pipe(int signum)
 {
     // Just ignore signal. It is called when pipe (socket connection) is broken and could terminate app.
 }
-
-/*
-struct bufferevent *bev = evhttp_connection_get_bufferevent(req->evcon);
-if (bev) //Prio is initialized with 10 states in main
-    bufferevent_priority_set(bev, 9); // set to low priority
-struct evbuffer* post_buffer = evhttp_request_get_input_buffer(req);
-size_t body_size = evbuffer_get_length(post_buffer);
-// a multipart parser takes care of writing the
-// post_buffer content to a file
-// this takes a few seconds and after completing this
-// the status_cb is accessible again
-*/
 
 http_server::http_server()
 {
@@ -150,6 +143,25 @@ void http_server::process_callback(struct evhttp_request *request, void *arg)
         hs->process_request(request);
 }
 
+typedef std::vector<std::pair<std::string, std::string>> temp_params;
+
+static int on_header_field(multipart_parser*, const char *at, size_t length, void* ctx)
+{
+    temp_params* params = reinterpret_cast<temp_params*>(ctx);
+    params->push_back(std::make_pair(std::string(at, length), std::string()));
+
+    return 0;
+}
+
+static int on_header_value(multipart_parser*, const char *at, size_t length, void* ctx)
+{
+    temp_params* params = reinterpret_cast<temp_params*>(ctx);
+    if (params->size())
+        params->back().second = std::string(at, length);
+
+    return 0;
+}
+
 void http_server::process_request(evhttp_request *request)
 {
     // Request
@@ -163,6 +175,15 @@ void http_server::process_request(evhttp_request *request)
     ri.mPath = evhttp_uri_get_path(uri);
     ri.mHost = evhttp_uri_get_host(uri) ? evhttp_uri_get_host(uri) : std::string();
 
+    // Find headers
+    evkeyvalq* hdr_queue = evhttp_request_get_input_headers(request);
+    evkeyval* hdr = hdr_queue ? hdr_queue->tqh_first : nullptr;
+    while (hdr)
+    {
+        ri.mHeaders.insert(std::make_pair(hdr->key, hdr->value ? std::string(hdr->value) : std::string()));
+        hdr = hdr->next.tqe_next;
+    }
+
     if (cmd == EVHTTP_REQ_GET)
     {
         if (mGetHandler)
@@ -174,12 +195,65 @@ void http_server::process_request(evhttp_request *request)
                 params.insert(std::pair<std::string, std::string>(std::string(val->key ? val->key : ""), std::string(val->value ? val->value : "")));
 
             // Call handler
-            mGetHandler(*this, request, ri, params);
+            ri.mParams = params;
+            ri.mMethod = Method_GET;
+            mGetHandler(*this, request, ri);
         }
         else
         {
-            // Send default answer 404 not found
-            evhttp_send_error(request, HTTP_NOTFOUND, "Document not found");
+            // Send default answer "not implemented"
+            evhttp_send_error(request, HTTP_NOTIMPLEMENTED, "Document not found");
+        }
+    }
+    else
+    if (cmd == EVHTTP_REQ_POST)
+    {
+        if (mGetHandler)
+        {
+            std::string boundary;
+            if (ri.mHeaders.count("Content-Type"))
+            {
+                std::string content_type = ri.mHeaders["Content-Type"];
+                if (content_type.find("multipart/form-data") != std::string::npos)
+                {
+                    std::string::size_type p = content_type.find("boundary=");
+                    if (p != std::string::npos)
+                        boundary = content_type.substr(p + strlen("boundary="));
+                }
+            }
+            struct evbuffer* post_buffer = evhttp_request_get_input_buffer(request);
+            size_t body_size = evbuffer_get_length(post_buffer);
+            char* body = new char[body_size+1];
+            evbuffer_remove(post_buffer, body, body_size);
+            body[body_size] = 0;
+
+            if (boundary.size())
+            {
+                temp_params tp;
+                multipart_parser_settings parser_settings;
+                memset(&parser_settings, 0, sizeof parser_settings);
+                parser_settings.on_header_field = &on_header_field;
+                parser_settings.on_header_value = &on_header_value;
+                parser_settings.ctx = &tp;
+                multipart_parser* parser = multipart_parser_init(boundary.c_str(), &parser_settings);
+                multipart_parser_execute(parser, reinterpret_cast<char*>(body), body_size);
+                multipart_parser_free(parser); parser = nullptr;
+
+                for (const auto& p: tp)
+                    ri.mParams.insert(p);
+            }
+            else
+            {
+                // TODO: Decode uri from body
+            }
+            delete[] body; body = nullptr;
+
+            ri.mMethod = Method_POST;
+            mGetHandler(*this, request, ri);
+        }
+        else
+        {
+            evhttp_send_error(request, HTTP_NOTIMPLEMENTED, "Not implemented");
         }
     }
     else
@@ -256,7 +330,7 @@ http_client::ctx http_client::get(const std::string& url, response_handler handl
 
     evhttp_request* r = evhttp_request_new(&process_eof_callback, this);
     r->chunk_cb = &process_data_callback;
-    r->error_cb = &process_error_callback;
+    //r->error_cb = &process_error_callback;
 
     // Add Host: header
     evhttp_add_header(evhttp_request_get_output_headers(r), "Host", addr.first.c_str());
@@ -300,7 +374,7 @@ void http_client::process_eof_callback(struct evhttp_request* request, void* tag
         hc->process_request_eof(request);
 }
 
-void http_client::process_error_callback(evhttp_request_error /*err*/, void* /*tag*/)
+void http_client::process_error_callback(int /*err*/, void* /*tag*/)
 {
     // Do nothing here - it is not clear how to handle this code
 }
@@ -355,7 +429,7 @@ void http_client::process_request_eof(evhttp_request *request)
     mRequests.erase(iter);
 }
 
-void http_client::process_request_error(evhttp_request* request, evhttp_request_error err)
+void http_client::process_request_error(evhttp_request* request, int err)
 {
     std::unique_lock<std::mutex> l(mMutex);
     auto iter = mRequests.find(request);
