@@ -56,7 +56,16 @@ void dashboard_start(int port, std::atomic_bool& exit_flag)
                 exit_flag = true;
         }
         else
-            server.send_error(ctx, 404);
+        if (info.mMethod == Method_POST)
+        {
+            std::ostringstream oss; oss << "<html><body>";
+            for (const auto& p: info.mParams)
+                oss << "<p>" << p.first << ": " << p.second << "</p>" << std::endl;
+            oss << "</body></html>";
+            server.send_html(ctx, oss.str());
+        }
+        else
+            server.send_error(ctx, 405);
     });
 
     DashboardServer->start();

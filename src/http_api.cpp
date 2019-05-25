@@ -11,8 +11,13 @@
 #include <signal.h>
 #include <string.h>
 #include <iostream>
+#include <algorithm>
+#include <cctype>
+#include <locale>
 
 #include "multipart_parser.h"
+#include "multipart_reader.h"
+
 
 void broken_pipe(int signum)
 {
@@ -55,6 +60,8 @@ void http_server::start()
     mHttpContext = evhttp_new(mIoContext);
     evhttp_bind_socket(mHttpContext, "0.0.0.0", mPort);
     evhttp_set_gencb(mHttpContext, &http_server::process_callback, this);
+    evhttp_set_max_body_size(mHttpContext, 20*1024*1024);
+    evhttp_set_max_headers_size(mHttpContext, 65536);
 
     mWorkerThread = std::make_shared<std::thread>(&http_server::worker, this);
     // Thread has no need to be joined - it is controlled via libevent API
@@ -87,7 +94,7 @@ void http_server::stop()
 
 void http_server::set_handler(const request_get_handler& handler)
 {
-    mGetHandler = handler;
+    mHandler = handler;
 }
 
 void http_server::send_json(void* ctx, const std::string& body)
@@ -143,23 +150,140 @@ void http_server::process_callback(struct evhttp_request *request, void *arg)
         hs->process_request(request);
 }
 
+
 typedef std::vector<std::pair<std::string, std::string>> temp_params;
 
-static int on_header_field(multipart_parser*, const char *at, size_t length, void* ctx)
-{
-    temp_params* params = reinterpret_cast<temp_params*>(ctx);
-    params->push_back(std::make_pair(std::string(at, length), std::string()));
 
-    return 0;
+void handle_part_begin(MultipartHeaders& headers);
+void handle_part_data(const char* buffer, size_t size);
+void handle_part_end();
+
+void MimePartBeginCallback(const MultipartHeaders& headers, void *userData)
+{
+    reinterpret_cast<http_server::request_parser*>(userData)->handle_part_begin(headers);
 }
 
-static int on_header_value(multipart_parser*, const char *at, size_t length, void* ctx)
+void MimePartDataCallback(const char *buffer, size_t len, void *userData)
 {
-    temp_params* params = reinterpret_cast<temp_params*>(ctx);
-    if (params->size())
-        params->back().second = std::string(at, length);
+    reinterpret_cast<http_server::request_parser*>(userData)->handle_part_data(buffer, len);
+}
 
-    return 0;
+void MimePartEndCallback(void *userData)
+{
+    reinterpret_cast<http_server::request_parser*>(userData)->handle_part_end();
+}
+
+static std::vector<std::string> tokenize(const std::string& s, char c)
+{
+    auto end = s.cend();
+    auto start = end;
+
+    std::vector<std::string> v;
+    for( auto it = s.cbegin(); it != end; ++it )
+    {
+        if( *it != c )
+        {
+            if( start == end )
+                start = it;
+            continue;
+        }
+        if( start != end )
+        {
+            v.emplace_back(start, it);
+            start = end;
+        }
+    }
+    if( start != end )
+        v.emplace_back(start, end);
+    return v;
+}
+
+// trim from start (in place)
+static inline void ltrim(std::string &s) {
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](int ch) {
+        return !std::isspace(ch);
+    }));
+}
+
+// trim from end (in place)
+static inline void rtrim(std::string &s) {
+    s.erase(std::find_if(s.rbegin(), s.rend(), [](int ch) {
+        return !std::isspace(ch);
+    }).base(), s.end());
+}
+
+// trim from both ends (in place)
+static inline void trim(std::string &s) {
+    ltrim(s);
+    rtrim(s);
+}
+
+
+// trim from start (copying)
+static inline std::string ltrim_copy(std::string s) {
+    ltrim(s);
+    return s;
+}
+
+// trim from end (copying)
+static inline std::string rtrim_copy(std::string s) {
+    rtrim(s);
+    return s;
+}
+
+// trim from both ends (copying)
+static inline std::string trim_copy(std::string s) {
+    trim(s);
+    return s;
+}
+
+void http_server::request_parser::handle_part_begin(const MultipartHeaders& headers)
+{
+    for (auto const& item: headers)
+    {
+        if (item.first == "Content-Disposition")
+        {
+            // Look for name
+            std::vector<std::string> parts = tokenize(item.second, ';');
+            for (std::string& s: parts)
+            {
+                std::vector<std::string> assignment_parts = tokenize(s, '=');
+                if (assignment_parts.size() >= 2)
+                {
+                    // Parameter sent
+                    std::string name = trim_copy(assignment_parts.front());
+                    std::string value = trim_copy(assignment_parts.back());
+                    if (value.size())
+                    {
+                        if (value.front() == '"' && value.back() == '"')
+                            value = value.substr(1, value.size() - 2);
+                    }
+                    if (name == "filename")
+                    {
+                        mCurrentFilename = value;
+                    }
+                    if (name == "name")
+                    {
+                        mCurrentName = value;
+                        mCurrentData.clear();
+                        mCurrentFilename.clear();
+                    }
+                }
+            }
+        }
+    }
+}
+
+void http_server::request_parser::handle_part_data(const char* buffer, size_t length)
+{
+    mCurrentData += std::string(buffer, length);
+}
+
+void http_server::request_parser::handle_part_end()
+{
+    mInfo.mParams.insert(std::make_pair(mCurrentName, mCurrentData));
+    if (mCurrentFilename.size())
+        mInfo.mParams.insert(std::make_pair(mCurrentName + ".filename", mCurrentFilename));
 }
 
 void http_server::process_request(evhttp_request *request)
@@ -171,22 +295,23 @@ void http_server::process_request(evhttp_request *request)
     const char* uri_text = evhttp_request_get_uri(request);
     struct evhttp_uri* uri = evhttp_uri_parse(uri_text);
     evhttp_cmd_type cmd = evhttp_request_get_command(request);
-    request_info ri;
-    ri.mPath = evhttp_uri_get_path(uri);
-    ri.mHost = evhttp_uri_get_host(uri) ? evhttp_uri_get_host(uri) : std::string();
+
+    request_parser& parser = find_request_parser(request);
+    parser.mInfo.mPath = evhttp_uri_get_path(uri);
+    parser.mInfo.mHost = evhttp_uri_get_host(uri) ? evhttp_uri_get_host(uri) : std::string();
 
     // Find headers
     evkeyvalq* hdr_queue = evhttp_request_get_input_headers(request);
     evkeyval* hdr = hdr_queue ? hdr_queue->tqh_first : nullptr;
     while (hdr)
     {
-        ri.mHeaders.insert(std::make_pair(hdr->key, hdr->value ? std::string(hdr->value) : std::string()));
+        parser.mInfo.mHeaders.insert(std::make_pair(hdr->key, hdr->value ? std::string(hdr->value) : std::string()));
         hdr = hdr->next.tqe_next;
     }
 
     if (cmd == EVHTTP_REQ_GET)
     {
-        if (mGetHandler)
+        if (mHandler)
         {
             evhttp_parse_query(uri_text, &headers);
             request_params params;
@@ -195,9 +320,9 @@ void http_server::process_request(evhttp_request *request)
                 params.insert(std::pair<std::string, std::string>(std::string(val->key ? val->key : ""), std::string(val->value ? val->value : "")));
 
             // Call handler
-            ri.mParams = params;
-            ri.mMethod = Method_GET;
-            mGetHandler(*this, request, ri);
+            parser.mInfo.mParams = params;
+            parser.mInfo.mMethod = Method_GET;
+            mHandler(*this, request, parser.mInfo);
         }
         else
         {
@@ -208,17 +333,21 @@ void http_server::process_request(evhttp_request *request)
     else
     if (cmd == EVHTTP_REQ_POST)
     {
-        if (mGetHandler)
+        if (mHandler)
         {
             std::string boundary;
-            if (ri.mHeaders.count("Content-Type"))
+            if (parser.mInfo.mHeaders.count("Content-Type"))
             {
-                std::string content_type = ri.mHeaders["Content-Type"];
-                if (content_type.find("multipart/form-data") != std::string::npos)
+                auto iter = parser.mInfo.mHeaders.find("Content-Type");
+                if (iter != parser.mInfo.mHeaders.end())
                 {
-                    std::string::size_type p = content_type.find("boundary=");
-                    if (p != std::string::npos)
-                        boundary = std::string("--") + content_type.substr(p + strlen("boundary="));
+                    std::string content_type = iter->second;
+                    if (content_type.find("multipart/form-data") != std::string::npos)
+                    {
+                        std::string::size_type p = content_type.find("boundary=");
+                        if (p != std::string::npos)
+                            boundary = content_type.substr(p + strlen("boundary="));
+                    }
                 }
             }
             struct evbuffer* post_buffer = evhttp_request_get_input_buffer(request);
@@ -229,18 +358,8 @@ void http_server::process_request(evhttp_request *request)
 
             if (boundary.size())
             {
-                temp_params tp;
-                multipart_parser_settings parser_settings;
-                memset(&parser_settings, 0, sizeof parser_settings);
-                parser_settings.on_header_field = &on_header_field;
-                parser_settings.on_header_value = &on_header_value;
-                parser_settings.ctx = &tp;
-                multipart_parser* parser = multipart_parser_init(boundary.c_str(), &parser_settings);
-                multipart_parser_execute(parser, reinterpret_cast<char*>(body), body_size);
-                multipart_parser_free(parser); parser = nullptr;
-
-                for (const auto& p: tp)
-                    ri.mParams.insert(p);
+                parser.mMultipartReader->setBoundary(boundary);
+                parser.mMultipartReader->feed(body, body_size);
             }
             else
             {
@@ -248,8 +367,13 @@ void http_server::process_request(evhttp_request *request)
             }
             delete[] body; body = nullptr;
 
-            ri.mMethod = Method_POST;
-            mGetHandler(*this, request, ri);
+            parser.mInfo.mMethod = Method_POST;
+            mHandler(*this, request, parser.mInfo);
+
+            // Remove used parser instance
+            auto iter = mRequestContexts.find(request);
+            if (iter != mRequestContexts.end())
+                mRequestContexts.erase(iter);
         }
         else
         {
@@ -263,6 +387,29 @@ void http_server::process_request(evhttp_request *request)
     }
     evhttp_uri_free(uri);
 }
+
+http_server::request_parser& http_server::find_request_parser(ctx request)
+{
+    std::shared_ptr<request_parser> result;
+
+    auto iter = mRequestContexts.find(request);
+    if (iter == mRequestContexts.end())
+    {
+        result = std::make_shared<request_parser>();
+        result->mMultipartReader = std::make_shared<MultipartReader>();
+
+        result->mMultipartReader->onPartBegin = &MimePartBeginCallback;
+        result->mMultipartReader->onPartEnd = &MimePartEndCallback;
+        result->mMultipartReader->onPartData = &MimePartDataCallback;
+        result->mMultipartReader->userData = result.get();
+
+        mRequestContexts.insert(std::make_pair(request, result));
+        return *result;
+    }
+    else
+        return *iter->second;
+}
+
 
 // ------------ http_client --------------
 http_client::http_client()
@@ -465,3 +612,4 @@ evhttp_connection* http_client::find_connection(const std::pair<std::string, uin
 
     return connIter->second;
 }
+
