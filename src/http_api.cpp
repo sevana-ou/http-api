@@ -402,7 +402,7 @@ request_multipart_parser& http_server::find_request_parser(ctx request)
 http_client::http_client()
 {
 #if defined(TARGET_LINUX) || defined(TARGET_OSX)
-    evthread_use_pthreads();
+    //evthread_use_pthreads();
 #endif
     signal(SIGPIPE, broken_pipe);
 
@@ -619,6 +619,11 @@ static void on_http_error(evhtp_request_t* req, evhtp_error_flags errtype, void*
 
 http_server_multi::http_server_multi()
 {
+    signal(SIGPIPE, broken_pipe);
+
+#if defined(TARGET_LINUX) || defined(TARGET_OSX)
+    evthread_use_pthreads();
+#endif
 }
 
 http_server_multi::~http_server_multi()
@@ -648,6 +653,7 @@ size_t http_server_multi::nrOfThreads() const
 
 void http_server_multi::start()
 {
+
     mIoContext = event_base_new();
     mHttpContext = evhtp_new(mIoContext, this);
     evhtp_enable_flag(mHttpContext, EVHTP_FLAG_ENABLE_ALL);
@@ -670,21 +676,24 @@ void http_server_multi::stop()
     if (!mIoContext)
         return;
 
-    if (mWorkerThread)
-    {
-        if (mWorkerThread->joinable())
-        {
-            mTerminated = true;
-            mWorkerThread->join();
-        }
-        mWorkerThread.reset();
-    }
 
     if (mHttpContext)
     {
+        evhtp_unbind_socket(mHttpContext);
         evhtp_free(mHttpContext);
         mHttpContext = nullptr;
     }
+
+    mTerminated = true;
+    event_base_loopbreak(mIoContext);
+
+    if (mWorkerThread)
+    {
+        if (mWorkerThread->joinable())
+            mWorkerThread->join();
+        mWorkerThread.reset();
+    }
+
     event_base_free(mIoContext); mIoContext = nullptr;
 }
 
@@ -693,6 +702,7 @@ void http_server_multi::worker()
     while (!mTerminated)
     {
         event_base_loop(mIoContext, 0);
+        //std::cout << "event_base_loop exit." << std::endl;
     }
 }
 
