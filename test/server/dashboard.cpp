@@ -10,7 +10,12 @@ using namespace std::chrono;
 static std::shared_ptr<http_server> DashboardServer;
 static time_point<steady_clock> StartTime = steady_clock::now();
 
-const std::string Html_Ok = "<html><body><p>Status: {status}</p><p>Message: {message}</p><p>Headers:</p>{headers}</body></html>";
+const std::string Html_Ok = "<html><body>"
+                            "<p>Status:  {status}    </p>"
+                            "<p>Message: {message}   </p>"
+                            "<p>Headers: {headers}   </p>"
+                            "<p>Thread:  {thread_id} </p>"
+                            "</body></html>";
 
 static std::string apply_vars(const std::string& templ, const std::map<std::string, std::string>& vars)
 {
@@ -41,9 +46,14 @@ void dashboard_start(int port, std::atomic_bool& exit_flag)
     {
         if (info.mMethod == Method_GET)
         {
+            // Get current thread id
+            std::ostringstream id_stream; id_stream << std::this_thread::get_id();
+
+            // Send minimal answer
             std::map<std::string, std::string> vars = {
                 {"status",      "ok"},
-                {"message",     "answered"}
+                {"message",     "answered"},
+                {"thread_id",   id_stream.str()}
             };
 
             std::ostringstream oss;
@@ -58,6 +68,7 @@ void dashboard_start(int port, std::atomic_bool& exit_flag)
         else
         if (info.mMethod == Method_POST)
         {
+            // Echo sent parameters
             std::ostringstream oss; oss << "<html><body>";
             for (const auto& p: info.mParams)
                 oss << "<p>" << p.first << ": " << p.second << "</p>" << std::endl;
