@@ -24,6 +24,31 @@ enum http_method
     Method_POST
 };
 
+
+// Request parameters & info
+typedef std::multimap<std::string, std::string> request_params;
+typedef std::multimap<std::string, std::string> request_headers;
+
+struct request_info
+{
+    std::string mHost, mPath;
+    http_method mMethod;
+    request_headers mHeaders;
+    request_params mParams;
+};
+
+struct request_multipart_parser
+{
+    request_info mInfo;
+    std::shared_ptr<MultipartReader> mMultipartReader;
+
+    std::string mCurrentName, mCurrentFilename, mCurrentData;
+
+    void handle_part_begin(const MultipartHeaders& headers);
+    void handle_part_data(const char* buffer, size_t size);
+    void handle_part_end();
+};
+
 class http_server
 {
 public:
@@ -36,35 +61,11 @@ public:
     void start();
     void stop();
 
-    typedef std::multimap<std::string, std::string> request_params;
-    typedef std::multimap<std::string, std::string> request_headers;
-
-    // Request parameters & info
-    struct request_info
-    {
-        std::string mHost, mPath;
-        http_method mMethod;
-        request_headers mHeaders;
-        request_params mParams;
-    };
-
-    struct request_parser
-    {
-        request_info mInfo;
-        std::shared_ptr<MultipartReader> mMultipartReader;
-
-        std::string mCurrentName, mCurrentFilename, mCurrentData;
-
-        void handle_part_begin(const MultipartHeaders& headers);
-        void handle_part_data(const char* buffer, size_t size);
-        void handle_part_end();
-    };
-
     // Request context
     typedef void* ctx;
 
     // Parsed information about requests
-    std::map<ctx, std::shared_ptr<request_parser>> mRequestContexts;
+    std::map<ctx, std::shared_ptr<request_multipart_parser>> mRequestContexts;
 
     // Callback to receive requests
     typedef std::function<void(http_server& server, ctx ctx, const request_info& ri)> request_get_handler;
@@ -85,8 +86,7 @@ private:
     void worker();
     static void process_callback(struct evhttp_request *request, void *arg);
     void process_request(evhttp_request* request);
-    request_parser& find_request_parser(ctx request);
-
+    request_multipart_parser& find_request_parser(ctx request);
 };
 
 class http_client
@@ -127,5 +127,53 @@ private:
     evhttp_connection* find_connection(const std::pair<std::string, uint16_t>& addr);
     std::pair<response_handler, response_info>* find_request(evhttp_request* request);
 };
+
+#if defined(ENABLE_MULTI_THREAD_SERVER)
+#include <evhtp/evhtp.h>
+
+class http_server_multi
+{
+public:
+    http_server_multi();
+    ~http_server_multi();
+
+    void setPort(uint16_t port);
+    uint16_t port() const;
+
+    void setNrOfThreads(size_t nr);
+    size_t nrOfThreads() const;
+
+    void start();
+    void stop();
+
+    // Request context
+    typedef void* ctx;
+
+    // Parsed information about requests
+    std::map<ctx, std::shared_ptr<request_multipart_parser>> mRequestContexts;
+
+    // Callback to receive requests
+    typedef std::function<void(http_server_multi& server, ctx ctx, const request_info& ri)> request_get_handler;
+
+    void set_handler(const request_get_handler& handler);
+    void send_json(ctx ctx, const std::string& body);
+    void send_html(ctx ctx, const std::string& body);
+    void send_error(ctx ctx, int code, const std::string& reason = "");
+
+private:
+    uint16_t mPort = 8080;
+    event_base* mIoContext = nullptr;
+    std::shared_ptr<std::thread> mWorkerThread;
+    request_get_handler mHandler;
+    std::atomic_bool mTerminated;
+    evhtp* mHttpContext = nullptr;
+    size_t mNumberOfThreads = 0;
+
+    void worker();
+    static void on_http_request(evhtp_request_t* req, void* arg);
+    void process_request(evhtp_request_t* request);
+    request_multipart_parser& find_request_parser(ctx request);
+};
+#endif
 
 #endif

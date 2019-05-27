@@ -7,7 +7,14 @@
 #include <sstream>
 
 using namespace std::chrono;
-static std::shared_ptr<http_server> DashboardServer;
+
+#if defined(ENABLE_MULTI_THREAD_SERVER)
+typedef http_server_multi my_http_server;
+#else
+typedef http_server my_http_server;
+#endif
+
+static std::shared_ptr<my_http_server> DashboardServer;
 static time_point<steady_clock> StartTime = steady_clock::now();
 
 const std::string Html_Ok = "<html><body>"
@@ -40,9 +47,9 @@ void dashboard_start(int port, std::atomic_bool& exit_flag)
     if (!port)
         return;
 
-    DashboardServer = std::make_shared<http_server>();
+    DashboardServer = std::make_shared<my_http_server>();
     DashboardServer->setPort(static_cast<uint16_t>(port));
-    DashboardServer->set_handler([&exit_flag](http_server& server, http_server::ctx ctx, const http_server::request_info& info)
+    DashboardServer->set_handler([&exit_flag](my_http_server& server, http_server::ctx ctx, const request_info& info)
     {
         if (info.mMethod == Method_GET)
         {
