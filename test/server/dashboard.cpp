@@ -5,6 +5,7 @@
 #include <chrono>
 #include <string>
 #include <sstream>
+#include <algorithm>
 
 using namespace std::chrono;
 
@@ -63,12 +64,40 @@ void dashboard_start(int port, std::atomic_bool& exit_flag)
                 {"thread_id",   id_stream.str()}
             };
 
-            std::ostringstream oss;
-            for (const auto& hdr: info.mHeaders)
-                oss << "<p>" << hdr.first << ": " << hdr.second << "</p>";
-            vars["headers"] = oss.str();
+            if (info.mPath == "/" || info.mPath == "/html")
+            {
+                std::ostringstream oss;
+                for (const auto& hdr: info.mHeaders)
+                    oss << "<p>" << hdr.first << ": " << hdr.second << "</p>";
+                vars["headers"] = oss.str();
+                server.send_html(ctx, apply_vars(Html_Ok, vars));
+            }
+            if (info.mPath == "/json" || info.mPath == "/json_chunked")
+            {
+                std::ostringstream oss;
+                oss << "{" << std::endl;
+                for (const auto& iter: vars)
+                {
+                    oss << "\"" << iter.first << "\": \"" << iter.second << "\"," << std::endl;
+                }
+                oss << "\"stub\": \"\"" << std::endl << "}";
 
-            server.send_html(ctx, apply_vars(Html_Ok, vars));
+                if (info.mPath == "/json")
+                    server.send_json(ctx, oss.str());
+                else
+                {
+                    server.send_chunk_reply(ctx, 200);
+                    std::string answer = oss.str();
+                    size_t sent_bytes = 0;
+                    while (sent_bytes < answer.size())
+                    {
+                        size_t to_send = std::min(static_cast<size_t>(10), answer.size() - sent_bytes);
+                        server.send_chunk_data(ctx, answer.data() + sent_bytes, to_send);
+                        sent_bytes += to_send;
+                    }
+                    server.send_chunk_finish(ctx);
+                }
+            }
             if (info.mPath.find("quit") != std::string::npos)
                 exit_flag = true;
         }

@@ -2,7 +2,7 @@
 #include <chrono>
 #include <thread>
 
-int main(int argc, const char** argv)
+int main(int /*argc*/, const char** /*argv*/)
 {
     // Run server
     std::atomic_bool exit_flag; exit_flag = false;

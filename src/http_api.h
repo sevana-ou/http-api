@@ -172,6 +172,7 @@ public:
     // No headers is sent in this method. Please use send_headers before
     void send_chunk_reply(ctx ctx, int code);
     void send_chunk_data(ctx ctx, const void* data, size_t len);
+    void send_chunk_finish(ctx ctx);
 
 private:
     uint16_t mPort = 8080;

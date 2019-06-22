@@ -917,6 +917,14 @@ void http_server_multi::send_chunk_data(ctx ctx, const void* data, size_t len)
     evbuffer_free(buf);
 }
 
+void http_server_multi::send_chunk_finish(ctx ctx)
+{
+    evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
+    if (!request)
+        return;
+    evhtp_send_reply_chunk_end(request);
+}
+
 void http_server_multi::send_content(ctx ctx, const std::string &content)
 {
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
