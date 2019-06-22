@@ -17,8 +17,8 @@ endif()
 
 set (CMAKE_CXX_STANDARD 11)
 set (CMAKE_CXX_STANDARD_REQUIRED 11)
-set (SRC http_api.cpp multipart_reader.cpp)
-set (HDR http_api.h multipart_reader.h)
+set (SRC http_api.cpp)
+set (HDR http_api.h multipart_reader.h multipart_parser.h)
 add_library(http_lib STATIC ${SRC} ${HDR})
 
 target_include_directories(http_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
