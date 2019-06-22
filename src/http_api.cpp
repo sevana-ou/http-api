@@ -482,6 +482,11 @@ http_client::ctx http_client::get(const std::string& url, response_handler handl
     return r;
 }
 
+event_base* http_client::getIoContext()
+{
+    return mIoContext;
+}
+
 void http_client::worker()
 {
     while (!mTerminated)
@@ -600,6 +605,7 @@ evhttp_connection* http_client::find_connection(const std::pair<std::string, uin
     return connIter->second;
 }
 
+#if defined(ENABLE_MULTI_THREAD_SERVER)
 // ---------------------- http_multi_server ----------------------
 #include "evhtp.h"
 
@@ -877,4 +883,89 @@ void http_server_multi::send_error(void *ctx, int code, const std::string &/*rea
     if (!ctx)
         return;
     evhtp_send_reply(reinterpret_cast<evhtp_request*>(ctx), static_cast<evhtp_res>(code));
+}
+
+void http_server_multi::send_redirect(ctx ctx, const std::string& uri)
+{
+    // ToDo
+}
+
+void http_server_multi::send_headers(ctx ctx, const response_headers& headers)
+{
+    for (auto& hdr: headers)
+    {
+        evhtp_headers_add_header(reinterpret_cast<evhtp_request*>(ctx)->headers_out,
+                                 evhtp_header_new(hdr.first.c_str(), hdr.second.c_str(), 1, 1));
+    }
+}
+
+void http_server_multi::send_chunk_reply(ctx ctx, int code)
+{
+    evhtp_send_reply_chunk_start(reinterpret_cast<evhtp_request*>(ctx), code);
+}
+
+void http_server_multi::send_chunk_data(ctx ctx, const void* data, size_t len)
+{
+    evhtp_request* req = reinterpret_cast<evhtp_request*>(ctx);
+    if (!req)
+        return;
+    if (!data || !len)
+        return;
+    evbuffer* buf = evbuffer_new();
+    evbuffer_add(buf, data, len);
+    evhtp_send_reply_chunk(req, buf);
+    evbuffer_free(buf);
+}
+
+void http_server_multi::send_content(ctx ctx, const std::string &content)
+{
+    evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
+
+    evbuffer* buffer = evbuffer_new();
+    evbuffer_add(buffer, content.c_str(), content.size());
+    evhtp_send_reply_start(request, EVHTP_RES_OK);
+    evhtp_send_reply_body(request, buffer);
+    evhtp_send_reply_end(request);
+}
+#endif
+
+static void timer_callback(evutil_socket_t, short, void* arg)
+{
+    try
+    {
+        timer* t = reinterpret_cast<timer*>(arg);
+        t->get_callback()();
+    }
+    catch(...)
+    {}
+}
+
+timer::timer(event_base* base, std::chrono::milliseconds interval, int flag, callback callback)
+    :mCallback(callback)
+{
+    if (flag == flag_interval_with_immediate)
+        callback();
+
+    mTimerEvent = event_new(base, -1, flag != flag_singleshot ? EV_PERSIST : 0,
+                            &timer_callback, this);
+    timeval tv;
+    tv.tv_sec = interval.count() / 1000;
+    tv.tv_usec = (interval.count() % 1000) * 1000;
+
+    event_add(mTimerEvent, &tv);
+}
+
+timer::~timer()
+{
+    if (mTimerEvent)
+    {
+        event_del(mTimerEvent);
+        event_free(mTimerEvent);
+        mTimerEvent = nullptr;
+    }
+}
+
+timer::callback timer::get_callback()
+{
+    return mCallback;
 }

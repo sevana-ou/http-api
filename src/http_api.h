@@ -11,6 +11,7 @@
 #include <atomic>
 #include <vector>
 
+struct event;
 struct evhttp_request;
 struct evhttp;
 struct event_base;
@@ -28,6 +29,7 @@ enum http_method
 // Request parameters & info
 typedef std::multimap<std::string, std::string> request_params;
 typedef std::multimap<std::string, std::string> request_headers;
+typedef std::multimap<std::string, std::string> response_headers;
 
 struct request_info
 {
@@ -106,6 +108,7 @@ public:
     typedef std::function<void(http_client& client, ctx ctx, response_info& ri)> response_handler;
     ctx get(const std::string& url, response_handler handler);
 
+    event_base* getIoContext();
 private:
     event_base* mIoContext = nullptr;
     evhttp_connection* mConn = nullptr;
@@ -160,6 +163,16 @@ public:
     void send_html(ctx ctx, const std::string& body);
     void send_error(ctx ctx, int code, const std::string& reason = "");
 
+    void send_redirect(ctx ctx, const std::string& uri);
+    void send_headers(ctx ctx, const response_headers& headers);
+
+    // No headers is sent in this method. Please use send_headers before
+    void send_content(ctx ctx, const std::string& content);
+
+    // No headers is sent in this method. Please use send_headers before
+    void send_chunk_reply(ctx ctx, int code);
+    void send_chunk_data(ctx ctx, const void* data, size_t len);
+
 private:
     uint16_t mPort = 8080;
     event_base* mIoContext = nullptr;
@@ -175,5 +188,25 @@ private:
     request_multipart_parser& find_request_parser(ctx request);
 };
 #endif
+
+class timer
+{
+public:
+    typedef std::function<void()> callback;
+    enum
+    {
+        flag_singleshot,
+        flag_interval,
+        flag_interval_with_immediate
+    };
+
+    timer(event_base* base, std::chrono::milliseconds interval, int flag, callback callback);
+    ~timer();
+    callback get_callback();
+
+protected:
+    event* mTimerEvent = nullptr;
+    callback mCallback;
+};
 
 #endif
