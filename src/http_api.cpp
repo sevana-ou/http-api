@@ -267,9 +267,9 @@ void request_multipart_parser::handle_part_data(const char* buffer, size_t lengt
 
 void request_multipart_parser::handle_part_end()
 {
-    mInfo.mParams.insert(std::make_pair(mCurrentName, mCurrentData));
+    mInfo.mParams.insert(std::make_pair("content", mCurrentData));
     if (mCurrentFilename.size())
-        mInfo.mParams.insert(std::make_pair(mCurrentName + ".filename", mCurrentFilename));
+        mInfo.mParams.insert(std::make_pair("filename", mCurrentFilename));
 }
 
 
@@ -659,7 +659,6 @@ size_t http_server_multi::nrOfThreads() const
 
 void http_server_multi::start()
 {
-
     mIoContext = event_base_new();
     mHttpContext = evhtp_new(mIoContext, this);
     evhtp_enable_flag(mHttpContext, EVHTP_FLAG_ENABLE_ALL);
@@ -741,6 +740,7 @@ void http_server_multi::process_request(evhtp_request *request)
                 while (param)
                 {
                     params.insert(std::pair<std::string, std::string>(std::string(param->key ? param->key : ""), std::string(param->val ? param->val : "")));
+                    param = reinterpret_cast<evhtp_kv*>(param->next.tqe_next);
                 }
             }
 
@@ -785,6 +785,10 @@ void http_server_multi::process_request(evhtp_request *request)
             {
                 parser.mMultipartReader->setBoundary(boundary);
                 parser.mMultipartReader->feed(body, body_size);
+                if (parser.mMultipartReader->succeeded())
+                {
+                    ;
+                }
             }
             else
             {
