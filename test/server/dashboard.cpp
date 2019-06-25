@@ -6,6 +6,7 @@
 #include <string>
 #include <sstream>
 #include <algorithm>
+#include <iostream>
 
 using namespace std::chrono;
 
@@ -43,6 +44,10 @@ static std::string apply_vars(const std::string& templ, const std::map<std::stri
     return r;
 }
 
+static std::shared_ptr<std::thread> delayed_thread;
+static std::mutex alive_requests_mutex;
+static std::set<my_http_server::ctx> alive_requests;
+
 void dashboard_start(int port, std::atomic_bool& exit_flag)
 {
     if (!port)
@@ -50,6 +55,18 @@ void dashboard_start(int port, std::atomic_bool& exit_flag)
 
     DashboardServer = std::make_shared<my_http_server>();
     DashboardServer->setPort(static_cast<uint16_t>(port));
+
+    DashboardServer->set_handler([](my_http_server& /*server*/, my_http_server::ctx ctx)
+    {
+        std::unique_lock<std::mutex> l(alive_requests_mutex);
+
+        auto iter = alive_requests.find(ctx);
+        if (iter != alive_requests.end())
+            alive_requests.erase(iter);
+
+        std::cout << "Request is finished." << std::endl;
+    });
+
     DashboardServer->set_handler([&exit_flag](my_http_server& server, http_server::ctx ctx, const request_info& info)
     {
         if (info.mMethod == Method_GET)
@@ -98,6 +115,19 @@ void dashboard_start(int port, std::atomic_bool& exit_flag)
                     server.send_chunk_finish(ctx);
                 }
             }
+            if (info.mPath == "/delayed_answer")
+            {
+                delayed_thread = std::make_shared<std::thread>([&server, ctx]()
+                {
+                    // Wait a time
+                    std::this_thread::sleep_for(std::chrono::seconds(120));
+
+                    std::unique_lock<std::mutex> l(alive_requests_mutex);
+                    if (alive_requests.count(ctx))
+                        server.send_html(ctx, "<html><body>Delayed answer arrived</body></html>");
+                });
+            }
+
             if (info.mPath.find("quit") != std::string::npos)
                 exit_flag = true;
         }

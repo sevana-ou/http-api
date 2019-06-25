@@ -10,6 +10,7 @@
 #include <mutex>
 #include <atomic>
 #include <vector>
+#include <set>
 
 struct event;
 struct evhttp_request;
@@ -27,7 +28,16 @@ enum http_method
 
 
 // Request parameters & info
-typedef std::multimap<std::string, std::string> request_params;
+class request_params: public std::multimap<std::string, std::string>
+{
+public:
+    bool        get_bool(const std::string& name, bool default_value = false) const;
+    int         get_int(const std::string& name, int default_value = 0) const;
+    std::set<int> get_int_set(const std::string& name) const;
+
+    std::string get_string(const std::string& name, const std::string& default_value = std::string()) const;
+};
+
 typedef std::multimap<std::string, std::string> request_headers;
 typedef std::multimap<std::string, std::string> response_headers;
 
@@ -158,7 +168,12 @@ public:
     // Callback to receive requests
     typedef std::function<void(http_server_multi& server, ctx ctx, const request_info& ri)> request_get_handler;
 
+    // Callback to receive notification about expired request
+    typedef std::function<void(http_server_multi& server, ctx ctx)> request_expired_handler;
+
     void set_handler(const request_get_handler& handler);
+    void set_handler(const request_expired_handler& handler);
+
     void send_json(ctx ctx, const std::string& body);
     void send_html(ctx ctx, const std::string& body);
     void send_error(ctx ctx, int code, const std::string& reason = "");
@@ -174,18 +189,25 @@ public:
     void send_chunk_data(ctx ctx, const void* data, size_t len);
     void send_chunk_finish(ctx ctx);
 
+
 private:
     uint16_t mPort = 8080;
     event_base* mIoContext = nullptr;
     std::shared_ptr<std::thread> mWorkerThread;
     request_get_handler mHandler;
+    request_expired_handler mExpiredHandler;
+
     std::atomic_bool mTerminated;
     evhtp* mHttpContext = nullptr;
     size_t mNumberOfThreads = 0;
 
     void worker();
     static void on_http_request(evhtp_request_t* req, void* arg);
+    static evhtp_res on_http_request_finalization(evhtp_request_t* req, void* arg);
+
     void process_request(evhtp_request_t* request);
+    void process_request_finalization(evhtp_request_t* request);
+
     request_multipart_parser& find_request_parser(ctx request);
 };
 #endif

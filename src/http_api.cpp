@@ -19,7 +19,62 @@
 #include "multipart_reader.h"
 
 
-void broken_pipe(int signum)
+// --------------- request_params --------------
+bool request_params::get_bool(const std::string& name, bool default_value) const
+{
+    auto iter = find(name);
+    if (iter != end())
+        return iter->second == "on" || iter->second == "true";
+    else
+        return default_value;
+}
+
+int request_params::get_int(const std::string& name, int default_value) const
+{
+    try
+    {
+        auto iter = find(name);
+        if (iter != end())
+            return std::stoi(iter->second);
+        else
+            return default_value;
+    }
+    catch(...)
+    {}
+    return default_value;
+}
+
+std::set<int> request_params::get_int_set(const std::string& name) const
+{
+    std::set<int> result;
+    try
+    {
+        auto iter = find(name);
+        while (iter != end())
+        {
+            int v = std::stoi(iter->second);
+            if (!result.count(v))
+                result.insert(v);
+            iter++;
+        }
+    }
+    catch(...)
+    {}
+
+    return result;
+}
+
+std::string request_params::get_string(const std::string& name, const std::string& default_value) const
+{
+    auto iter = find(name);
+    if (iter != end())
+        return iter->second;
+    else
+        return default_value;
+}
+
+// ------------- http_server -----------------
+void broken_pipe(int /*signum*/)
 {
     // Just ignore signal. It is called when pipe (socket connection) is broken and could terminate app.
 }
@@ -611,11 +666,22 @@ evhttp_connection* http_client::find_connection(const std::pair<std::string, uin
 
 void http_server_multi::on_http_request(evhtp_request_t* req, void* arg)
 {
-    if (arg)
+    if (arg && req)
     {
         http_server_multi* server = reinterpret_cast<http_server_multi*>(arg);
         server->process_request(req);
     }
+}
+
+evhtp_res http_server_multi::on_http_request_finalization(evhtp_request_t *req, void *arg)
+{
+    if (arg && req)
+    {
+        http_server_multi* server = reinterpret_cast<http_server_multi*>(arg);
+        server->process_request_finalization(req);
+    }
+
+    return EVHTP_RES_OK;
 }
 
 static void on_http_error(evhtp_request_t* req, evhtp_error_flags errtype, void* arg)
@@ -661,8 +727,14 @@ void http_server_multi::start()
 {
     mIoContext = event_base_new();
     mHttpContext = evhtp_new(mIoContext, this);
+
+    // Just to be safe
+    evhtp_use_callback_locks(mHttpContext);
+
     evhtp_enable_flag(mHttpContext, EVHTP_FLAG_ENABLE_ALL);
-    evhtp_set_gencb(mHttpContext, &on_http_request, this);
+    auto callback = evhtp_set_cb(mHttpContext, "/", &on_http_request, this);
+    evhtp_callback_set_hook(callback, evhtp_hook_on_request_fini,
+                            reinterpret_cast<evhtp_hook>(&on_http_request_finalization), this);
 
     int rescode = evhtp_bind_socket(mHttpContext, "ipv4:0.0.0.0", mPort, 5);
     size_t nr_of_threads = mNumberOfThreads ? mNumberOfThreads : std::thread::hardware_concurrency();
@@ -816,6 +888,17 @@ void http_server_multi::process_request(evhtp_request *request)
     }
 }
 
+void http_server_multi::process_request_finalization(evhtp_request_t *request)
+{
+    try
+    {
+        if (mExpiredHandler)
+            mExpiredHandler(*this, request);
+    }
+    catch(...)
+    {}
+}
+
 request_multipart_parser& http_server_multi::find_request_parser(ctx request)
 {
     std::shared_ptr<request_multipart_parser> result;
@@ -841,6 +924,11 @@ request_multipart_parser& http_server_multi::find_request_parser(ctx request)
 void http_server_multi::set_handler(const request_get_handler& handler)
 {
     mHandler = handler;
+}
+
+void http_server_multi::set_handler(const request_expired_handler& handler)
+{
+    mExpiredHandler = handler;
 }
 
 void http_server_multi::send_json(void* ctx, const std::string& body)
@@ -911,10 +999,9 @@ void http_server_multi::send_chunk_reply(ctx ctx, int code)
 void http_server_multi::send_chunk_data(ctx ctx, const void* data, size_t len)
 {
     evhtp_request* req = reinterpret_cast<evhtp_request*>(ctx);
-    if (!req)
+    if (!req || !data || !len)
         return;
-    if (!data || !len)
-        return;
+
     evbuffer* buf = evbuffer_new();
     evbuffer_add(buf, data, len);
     evhtp_send_reply_chunk(req, buf);
@@ -941,6 +1028,8 @@ void http_server_multi::send_content(ctx ctx, const std::string &content)
 }
 #endif
 
+
+// ----------------- timer ---------------------
 static void timer_callback(evutil_socket_t, short, void* arg)
 {
     try
