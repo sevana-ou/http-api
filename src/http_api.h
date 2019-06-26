@@ -31,11 +31,10 @@ enum http_method
 class request_params: public std::multimap<std::string, std::string>
 {
 public:
-    bool        get_bool(const std::string& name, bool default_value = false) const;
-    int         get_int(const std::string& name, int default_value = 0) const;
-    std::set<int> get_int_set(const std::string& name) const;
-
-    std::string get_string(const std::string& name, const std::string& default_value = std::string()) const;
+    bool            get_bool(const std::string& name, bool default_value = false) const;
+    int             get_int(const std::string& name, int default_value = 0) const;
+    std::set<int>   get_int_set(const std::string& name) const;
+    std::string     get_string(const std::string& name, const std::string& default_value = std::string()) const;
 };
 
 typedef std::multimap<std::string, std::string> request_headers;
@@ -163,6 +162,7 @@ public:
     typedef void* ctx;
 
     // Parsed information about requests
+    std::recursive_mutex mRequestContextsMutex;
     std::map<ctx, std::shared_ptr<request_multipart_parser>> mRequestContexts;
 
     // Callback to receive requests

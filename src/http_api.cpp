@@ -544,6 +544,9 @@ event_base* http_client::getIoContext()
 
 void http_client::worker()
 {
+#if defined(TARGET_LINUX)
+    pthread_setname_np(pthread_self(), "http_client");
+#endif
     while (!mTerminated)
     {
         event_base_dispatch(mIoContext);
@@ -776,6 +779,9 @@ void http_server_multi::stop()
 
 void http_server_multi::worker()
 {
+#if defined(TARGET_LINUX)
+    pthread_setname_np(pthread_self(), "http_server_multi");
+#endif
     while (!mTerminated)
     {
         event_base_loop(mIoContext, 0);
@@ -787,6 +793,8 @@ void http_server_multi::worker()
 void http_server_multi::process_request(evhtp_request *request)
 {
     // Find context structure
+    std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+
     request_multipart_parser& parser = find_request_parser(request);
     parser.mInfo.mPath = request->uri->path->full ? request->uri->path->full : std::string();
 
@@ -892,6 +900,12 @@ void http_server_multi::process_request_finalization(evhtp_request_t *request)
 {
     try
     {
+        std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+
+        auto iter = mRequestContexts.find(request);
+        if (iter != mRequestContexts.end())
+            mRequestContexts.erase(iter);
+
         if (mExpiredHandler)
             mExpiredHandler(*this, request);
     }
@@ -972,8 +986,11 @@ void http_server_multi::send_html(void* ctx, const std::string& body)
 
 void http_server_multi::send_error(void *ctx, int code, const std::string &/*reason*/)
 {
-    if (!ctx)
+    evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
+    std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+    if (mRequestContexts.find(request) == mRequestContexts.end())
         return;
+
     evhtp_send_reply(reinterpret_cast<evhtp_request*>(ctx), static_cast<evhtp_res>(code));
 }
 
@@ -984,6 +1001,11 @@ void http_server_multi::send_redirect(ctx ctx, const std::string& uri)
 
 void http_server_multi::send_headers(ctx ctx, const response_headers& headers)
 {
+    evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
+    std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+    if (mRequestContexts.find(request) == mRequestContexts.end())
+        return;
+
     for (auto& hdr: headers)
     {
         evhtp_headers_add_header(reinterpret_cast<evhtp_request*>(ctx)->headers_out,
@@ -993,13 +1015,24 @@ void http_server_multi::send_headers(ctx ctx, const response_headers& headers)
 
 void http_server_multi::send_chunk_reply(ctx ctx, int code)
 {
-    evhtp_send_reply_chunk_start(reinterpret_cast<evhtp_request*>(ctx), code);
+    evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
+
+    std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+    if (mRequestContexts.find(request) == mRequestContexts.end())
+        return;
+
+    evhtp_send_reply_chunk_start(request, code);
 }
 
 void http_server_multi::send_chunk_data(ctx ctx, const void* data, size_t len)
 {
     evhtp_request* req = reinterpret_cast<evhtp_request*>(ctx);
     if (!req || !data || !len)
+        return;
+
+    // Check if request is alive yet
+    std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+    if (mRequestContexts.find(req) == mRequestContexts.end())
         return;
 
     evbuffer* buf = evbuffer_new();
@@ -1019,6 +1052,9 @@ void http_server_multi::send_chunk_finish(ctx ctx)
 void http_server_multi::send_content(ctx ctx, const std::string &content)
 {
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
+    std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+    if (mRequestContexts.find(request) == mRequestContexts.end())
+        return;
 
     evbuffer* buffer = evbuffer_new();
     evbuffer_add(buffer, content.c_str(), content.size());
