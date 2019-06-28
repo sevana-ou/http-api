@@ -79,131 +79,6 @@ void broken_pipe(int /*signum*/)
     // Just ignore signal. It is called when pipe (socket connection) is broken and could terminate app.
 }
 
-http_server::http_server()
-{
-
-}
-
-http_server::~http_server()
-{
-    stop();
-}
-
-void http_server::setPort(uint16_t port)
-{
-    mPort = port;
-}
-
-uint16_t http_server::port() const
-{
-    return mPort;
-}
-
-void http_server::start()
-{
-    if (mIoContext)
-        return;
-
-    mTerminated = false;
-    signal(SIGPIPE, broken_pipe);
-
-#if defined(TARGET_LINUX) || defined(TARGET_OSX)
-    evthread_use_pthreads();
-#endif
-
-    mIoContext = event_base_new();
-    mHttpContext = evhttp_new(mIoContext);
-    evhttp_bind_socket(mHttpContext, "0.0.0.0", mPort);
-    evhttp_set_gencb(mHttpContext, &http_server::process_callback, this);
-    evhttp_set_max_body_size(mHttpContext, 20*1024*1024);
-    evhttp_set_max_headers_size(mHttpContext, 65536);
-
-    mWorkerThread = std::make_shared<std::thread>(&http_server::worker, this);
-    // Thread has no need to be joined - it is controlled via libevent API
-    // mWorkerThread->detach();
-}
-
-void http_server::stop()
-{
-    if (!mIoContext)
-        return;
-
-    // Exit from worker thread
-    mTerminated = true;
-    event_base_loopbreak(mIoContext);
-
-    if (mHttpContext)
-    {
-        evhttp_free(mHttpContext);
-        mHttpContext = nullptr;
-    }
-
-    if (mWorkerThread)
-    {
-        if (mWorkerThread->joinable())
-            mWorkerThread->join();
-        mWorkerThread.reset();
-    }
-    event_base_free(mIoContext); mIoContext = nullptr;
-}
-
-void http_server::set_handler(const request_get_handler& handler)
-{
-    mHandler = handler;
-}
-
-void http_server::send_json(void* ctx, const std::string& body)
-{
-    if (!ctx)
-        return;
-
-    evhttp_request* request = reinterpret_cast<evhttp_request*>(ctx);
-    evhttp_add_header(evhttp_request_get_output_headers(request), "Content-Type", "application/json");
-    evhttp_add_header(evhttp_request_get_output_headers(request), "Content-Length", std::to_string(body.size()).c_str());
-
-    evbuffer* buffer = evbuffer_new();
-    evbuffer_add(buffer, body.c_str(), body.size());
-    evhttp_send_reply(request, HTTP_OK, "OK", buffer);
-    evbuffer_free(buffer);
-}
-
-void http_server::send_html(void* ctx, const std::string& body)
-{
-    if (!ctx)
-        return;
-
-    evhttp_request* request = reinterpret_cast<evhttp_request*>(ctx);
-    evhttp_add_header(evhttp_request_get_output_headers(request), "Content-Type", "text/html");
-    evhttp_add_header(evhttp_request_get_output_headers(request), "Content-Length", std::to_string(body.size()).c_str());
-
-    evbuffer* buffer = evbuffer_new();
-    evbuffer_add(buffer, body.c_str(), body.size());
-    evhttp_send_reply(request, HTTP_OK, "OK", buffer);
-    evbuffer_free(buffer);
-}
-
-void http_server::send_error(void *ctx, int code, const std::string &reason)
-{
-    if (!ctx)
-        return;
-
-    evhttp_send_error(reinterpret_cast<evhttp_request*>(ctx), code, reason.c_str());
-}
-
-void http_server::worker()
-{
-    while (!mTerminated)
-    {
-        event_base_dispatch(mIoContext);
-    }
-}
-
-void http_server::process_callback(struct evhttp_request *request, void *arg)
-{
-    http_server* hs = reinterpret_cast<http_server*>(arg);
-    if (hs)
-        hs->process_request(request);
-}
 
 
 typedef std::vector<std::pair<std::string, std::string>> temp_params;
@@ -328,133 +203,10 @@ void request_multipart_parser::handle_part_end()
 }
 
 
-void http_server::process_request(evhttp_request *request)
-{
-    // Request
-    struct evkeyvalq headers;
-
-    // Parse the query for later lookups
-    const char* uri_text = evhttp_request_get_uri(request);
-    struct evhttp_uri* uri = evhttp_uri_parse(uri_text);
-    evhttp_cmd_type cmd = evhttp_request_get_command(request);
-
-    request_multipart_parser& parser = find_request_parser(request);
-    parser.mInfo.mPath = evhttp_uri_get_path(uri);
-    parser.mInfo.mHost = evhttp_uri_get_host(uri) ? evhttp_uri_get_host(uri) : std::string();
-
-    // Find headers
-    evkeyvalq* hdr_queue = evhttp_request_get_input_headers(request);
-    evkeyval* hdr = hdr_queue ? hdr_queue->tqh_first : nullptr;
-    while (hdr)
-    {
-        parser.mInfo.mHeaders.insert(std::make_pair(hdr->key, hdr->value ? std::string(hdr->value) : std::string()));
-        hdr = hdr->next.tqe_next;
-    }
-
-    if (cmd == EVHTTP_REQ_GET)
-    {
-        if (mHandler)
-        {
-            evhttp_parse_query(uri_text, &headers);
-            request_params params;
-            // Iterate headers and put it do dictionary
-            for (evkeyval* val = headers.tqh_first; val != nullptr; val = val->next.tqe_next)
-                params.insert(std::pair<std::string, std::string>(std::string(val->key ? val->key : ""), std::string(val->value ? val->value : "")));
-
-            // Call handler
-            parser.mInfo.mParams = params;
-            parser.mInfo.mMethod = Method_GET;
-            mHandler(*this, request, parser.mInfo);
-        }
-        else
-        {
-            // Send default answer "not implemented"
-            evhttp_send_error(request, HTTP_NOTIMPLEMENTED, "Document not found");
-        }
-    }
-    else
-    if (cmd == EVHTTP_REQ_POST)
-    {
-        if (mHandler)
-        {
-            std::string boundary;
-            if (parser.mInfo.mHeaders.count("Content-Type"))
-            {
-                auto iter = parser.mInfo.mHeaders.find("Content-Type");
-                if (iter != parser.mInfo.mHeaders.end())
-                {
-                    std::string content_type = iter->second;
-                    if (content_type.find("multipart/form-data") != std::string::npos)
-                    {
-                        std::string::size_type p = content_type.find("boundary=");
-                        if (p != std::string::npos)
-                            boundary = content_type.substr(p + strlen("boundary="));
-                    }
-                }
-            }
-            struct evbuffer* post_buffer = evhttp_request_get_input_buffer(request);
-            size_t body_size = evbuffer_get_length(post_buffer);
-            char* body = new char[body_size+1];
-            evbuffer_remove(post_buffer, body, body_size);
-            body[body_size] = 0;
-
-            if (boundary.size())
-            {
-                parser.mMultipartReader->setBoundary(boundary);
-                parser.mMultipartReader->feed(body, body_size);
-            }
-            else
-            {
-                // TODO: Decode uri from body
-            }
-            delete[] body; body = nullptr;
-
-            parser.mInfo.mMethod = Method_POST;
-            mHandler(*this, request, parser.mInfo);
-
-            // Remove used parser instance
-            auto iter = mRequestContexts.find(request);
-            if (iter != mRequestContexts.end())
-                mRequestContexts.erase(iter);
-        }
-        else
-        {
-            evhttp_send_error(request, HTTP_NOTIMPLEMENTED, "Not implemented");
-        }
-    }
-    else
-    {
-        // Send default answer
-        evhttp_send_error(request, HTTP_BADMETHOD, "Method not allowed.");
-    }
-    evhttp_uri_free(uri);
-}
-
-request_multipart_parser& http_server::find_request_parser(ctx request)
-{
-    std::shared_ptr<request_multipart_parser> result;
-
-    auto iter = mRequestContexts.find(request);
-    if (iter == mRequestContexts.end())
-    {
-        result = std::make_shared<request_multipart_parser>();
-        result->mMultipartReader = std::make_shared<MultipartReader>();
-
-        result->mMultipartReader->onPartBegin = &MimePartBeginCallback;
-        result->mMultipartReader->onPartEnd = &MimePartEndCallback;
-        result->mMultipartReader->onPartData = &MimePartDataCallback;
-        result->mMultipartReader->userData = result.get();
-
-        mRequestContexts.insert(std::make_pair(request, result));
-        return *result;
-    }
-    else
-        return *iter->second;
-}
-
 
 // ------------ http_client --------------
-http_client::http_client()
+http_client::http_client(int timeout_in_seconds)
+    :mTimeoutInSeconds(timeout_in_seconds)
 {
 #if defined(TARGET_LINUX) || defined(TARGET_OSX)
     //evthread_use_pthreads();
@@ -489,7 +241,7 @@ http_client::~http_client()
         event_base_free(mIoContext);
 }
 
-http_client::ctx http_client::get(const std::string& url, response_handler handler)
+http_client::ctx http_client::get(const std::string& url, connection_kind kind, response_handler handler)
 {
     evhttp_uri* u = evhttp_uri_parse(url.c_str());
     if (!u)
@@ -523,7 +275,8 @@ http_client::ctx http_client::get(const std::string& url, response_handler handl
 
     // Add Host: header
     evhttp_add_header(evhttp_request_get_output_headers(r), "Host", addr.first.c_str());
-    evhttp_add_header(evhttp_request_get_output_headers(r), "Connection", "Close");
+    if (kind == connection_close)
+        evhttp_add_header(evhttp_request_get_output_headers(r), "Connection", "Close");
 
     mRequests[r] = std::pair<response_handler, response_info>(handler, response_info());
 
@@ -656,6 +409,8 @@ evhttp_connection* http_client::find_connection(const std::pair<std::string, uin
     if (connIter == mConnections.end())
     {
         evhttp_connection* c = evhttp_connection_base_new(mIoContext, nullptr, addr.first.c_str(), addr.second);
+        evhttp_connection_set_timeout(c, mTimeoutInSeconds);
+
         auto insertResult = mConnections.insert({addr, c});
         connIter = insertResult.first;
     }
@@ -667,20 +422,20 @@ evhttp_connection* http_client::find_connection(const std::pair<std::string, uin
 // ---------------------- http_multi_server ----------------------
 #include "evhtp.h"
 
-void http_server_multi::on_http_request(evhtp_request_t* req, void* arg)
+void http_server::on_http_request(evhtp_request_t* req, void* arg)
 {
     if (arg && req)
     {
-        http_server_multi* server = reinterpret_cast<http_server_multi*>(arg);
+        http_server* server = reinterpret_cast<http_server*>(arg);
         server->process_request(req);
     }
 }
 
-evhtp_res http_server_multi::on_http_request_finalization(evhtp_request_t *req, void *arg)
+evhtp_res http_server::on_http_request_finalization(evhtp_request_t *req, void *arg)
 {
     if (arg && req)
     {
-        http_server_multi* server = reinterpret_cast<http_server_multi*>(arg);
+        http_server* server = reinterpret_cast<http_server*>(arg);
         server->process_request_finalization(req);
     }
 
@@ -692,7 +447,7 @@ static void on_http_error(evhtp_request_t* req, evhtp_error_flags errtype, void*
 
 }
 
-http_server_multi::http_server_multi()
+http_server::http_server()
 {
     signal(SIGPIPE, broken_pipe);
 
@@ -701,32 +456,32 @@ http_server_multi::http_server_multi()
 #endif
 }
 
-http_server_multi::~http_server_multi()
+http_server::~http_server()
 {
     stop();
 }
 
-void http_server_multi::setPort(uint16_t port)
+void http_server::setPort(uint16_t port)
 {
     mPort = port;
 }
 
-uint16_t http_server_multi::port() const
+uint16_t http_server::port() const
 {
     return mPort;
 }
 
-void http_server_multi::setNrOfThreads(size_t nr)
+void http_server::setNrOfThreads(size_t nr)
 {
     mNumberOfThreads = nr;
 }
 
-size_t http_server_multi::nrOfThreads() const
+size_t http_server::nrOfThreads() const
 {
     return mNumberOfThreads;
 }
 
-void http_server_multi::start()
+void http_server::start()
 {
     mIoContext = event_base_new();
     mHttpContext = evhtp_new(mIoContext, this);
@@ -748,10 +503,10 @@ void http_server_multi::start()
 
     // Start worker listener thread
     mTerminated = false;
-    mWorkerThread = std::make_shared<std::thread>(&http_server_multi::worker, this);
+    mWorkerThread = std::make_shared<std::thread>(&http_server::worker, this);
 }
 
-void http_server_multi::stop()
+void http_server::stop()
 {
     if (!mIoContext)
         return;
@@ -777,7 +532,7 @@ void http_server_multi::stop()
     event_base_free(mIoContext); mIoContext = nullptr;
 }
 
-void http_server_multi::worker()
+void http_server::worker()
 {
 #if defined(TARGET_LINUX)
     pthread_setname_np(pthread_self(), "http_server_multi");
@@ -789,8 +544,7 @@ void http_server_multi::worker()
     }
 }
 
-
-void http_server_multi::process_request(evhtp_request *request)
+void http_server::process_request(evhtp_request *request)
 {
     // Find context structure
     std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
@@ -896,7 +650,7 @@ void http_server_multi::process_request(evhtp_request *request)
     }
 }
 
-void http_server_multi::process_request_finalization(evhtp_request_t *request)
+void http_server::process_request_finalization(evhtp_request_t *request)
 {
     try
     {
@@ -913,7 +667,7 @@ void http_server_multi::process_request_finalization(evhtp_request_t *request)
     {}
 }
 
-request_multipart_parser& http_server_multi::find_request_parser(ctx request)
+request_multipart_parser& http_server::find_request_parser(ctx request)
 {
     std::shared_ptr<request_multipart_parser> result;
 
@@ -935,56 +689,80 @@ request_multipart_parser& http_server_multi::find_request_parser(ctx request)
         return *iter->second;
 }
 
-void http_server_multi::set_handler(const request_get_handler& handler)
+void http_server::set_handler(const request_get_handler& handler)
 {
     mHandler = handler;
 }
 
-void http_server_multi::set_handler(const request_expired_handler& handler)
+void http_server::set_handler(const request_expired_handler& handler)
 {
     mExpiredHandler = handler;
 }
 
-void http_server_multi::send_json(void* ctx, const std::string& body)
+void http_server::set_content_type(ctx ctx, content_type ct)
 {
     if (!ctx)
         return;
 
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
-    evhtp_kvs_add_kv(request->headers_out, evhtp_kv_new("Content-Type", "application/json", 0, 0));
-    evhtp_kvs_add_kv(request->headers_out, evhtp_kv_new("Content-Length", std::to_string(body.size()).c_str(), 0, 1));
+    const char* ct_text = nullptr;
+    switch (ct)
+    {
+    case content_type_html:         ct_text = "text/html"; break;
+    case content_type_json:         ct_text = "application/json"; break;
+    }
 
-    evbuffer* buffer = evbuffer_new();
-    evbuffer_add(buffer, body.c_str(), body.size());
-
-    evhtp_send_reply_start(request, EVHTP_RES_OK);
-    evhtp_send_reply_body(request, buffer);
-    evhtp_send_reply_end(request);
-
-    evbuffer_free(buffer);
+    // Look for already set Content-Type header
+    evhtp_kv_t* ct_header = evhtp_kvs_find_kv(request->headers_out, "Content-Type");
+    if (ct_header)
+    {
+        ct_header->val = const_cast<char*>(ct_text);
+        ct_header->v_heaped = 0;
+    }
+    else
+        evhtp_kvs_add_kv(request->headers_out, evhtp_kv_new("Content-Type", ct_text, 0, 1));
 }
 
-void http_server_multi::send_html(void* ctx, const std::string& body)
+void http_server::set_content_type(ctx ctx, const std::string& ct)
 {
     if (!ctx)
         return;
 
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
-
-    // Send headers
-    evhtp_kvs_add_kv(request->headers_out, evhtp_kv_new("Content-Type", "text/html", 0, 0));
-    evhtp_kvs_add_kv(request->headers_out, evhtp_kv_new("Content-Length", std::to_string(body.size()).c_str(), 0, 1));
-
-    evbuffer* buffer = evbuffer_new();
-    evbuffer_add(buffer, body.c_str(), body.size());
-
-    evhtp_send_reply_start(request, EVHTP_RES_OK);
-    evhtp_send_reply_body(request, buffer);
-    evhtp_send_reply_end(request);
-    evbuffer_free(buffer);
+    // Look for already set Content-Type header
+    evhtp_kv_t* ct_header = evhtp_kvs_find_kv(request->headers_out, "Content-Type");
+    if (ct_header)
+    {
+        ct_header->val = strdup(ct.c_str());
+        ct_header->v_heaped = 1;
+    }
+    else
+        evhtp_kvs_add_kv(request->headers_out, evhtp_kv_new("Content-Type", ct.c_str(), 0, 1));
 }
 
-void http_server_multi::send_error(void *ctx, int code, const std::string &/*reason*/)
+void http_server::send_json(void* ctx, const std::string& body)
+{
+    if (!ctx)
+        return;
+
+    set_content_type(ctx, content_type_json);
+    send_chunk_reply(ctx, EVHTP_RES_200);
+    send_chunk_data(ctx, body.c_str(), body.size());
+    send_chunk_finish(ctx);
+}
+
+void http_server::send_html(void* ctx, const std::string& body)
+{
+    if (!ctx)
+        return;
+
+    set_content_type(ctx, content_type_html);
+    send_chunk_reply(ctx, EVHTP_RES_200);
+    send_chunk_data(ctx, body.c_str(), body.size());
+    send_chunk_finish(ctx);
+}
+
+void http_server::send_error(void *ctx, int code, const std::string &/*reason*/)
 {
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
     std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
@@ -994,12 +772,12 @@ void http_server_multi::send_error(void *ctx, int code, const std::string &/*rea
     evhtp_send_reply(reinterpret_cast<evhtp_request*>(ctx), static_cast<evhtp_res>(code));
 }
 
-void http_server_multi::send_redirect(ctx ctx, const std::string& uri)
+void http_server::send_redirect(ctx ctx, const std::string& uri)
 {
     // ToDo
 }
 
-void http_server_multi::send_headers(ctx ctx, const response_headers& headers)
+void http_server::send_headers(ctx ctx, const response_headers& headers)
 {
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
     std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
@@ -1013,7 +791,7 @@ void http_server_multi::send_headers(ctx ctx, const response_headers& headers)
     }
 }
 
-void http_server_multi::send_chunk_reply(ctx ctx, int code)
+void http_server::send_chunk_reply(ctx ctx, int code)
 {
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
 
@@ -1024,7 +802,7 @@ void http_server_multi::send_chunk_reply(ctx ctx, int code)
     evhtp_send_reply_chunk_start(request, code);
 }
 
-void http_server_multi::send_chunk_data(ctx ctx, const void* data, size_t len)
+void http_server::send_chunk_data(ctx ctx, const void* data, size_t len)
 {
     evhtp_request* req = reinterpret_cast<evhtp_request*>(ctx);
     if (!req || !data || !len)
@@ -1041,7 +819,7 @@ void http_server_multi::send_chunk_data(ctx ctx, const void* data, size_t len)
     evbuffer_free(buf);
 }
 
-void http_server_multi::send_chunk_finish(ctx ctx)
+void http_server::send_chunk_finish(ctx ctx)
 {
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
     if (!request)
@@ -1049,7 +827,7 @@ void http_server_multi::send_chunk_finish(ctx ctx)
     evhtp_send_reply_chunk_end(request);
 }
 
-void http_server_multi::send_content(ctx ctx, const std::string &content)
+void http_server::send_content(ctx ctx, const std::string &content)
 {
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
     std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
@@ -1062,6 +840,18 @@ void http_server_multi::send_content(ctx ctx, const std::string &content)
     evhtp_send_reply_body(request, buffer);
     evhtp_send_reply_end(request);
 }
+
+
+void http_server::set_keepalive(ctx ctx, bool keepalive)
+{
+    evhtp_request_set_keepalive(reinterpret_cast<evhtp_request*>(ctx), keepalive ? 1 : 0);
+}
+
+void http_server::set_maxbodysize(ctx ctx, size_t size)
+{
+    evhtp_request_set_max_body_size(reinterpret_cast<evhtp_request*>(ctx), size);
+}
+
 #endif
 
 

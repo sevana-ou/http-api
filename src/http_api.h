@@ -60,50 +60,10 @@ struct request_multipart_parser
     void handle_part_end();
 };
 
-class http_server
-{
-public:
-    http_server();
-    ~http_server();
-
-    void setPort(uint16_t port);
-    uint16_t port() const;
-
-    void start();
-    void stop();
-
-    // Request context
-    typedef void* ctx;
-
-    // Parsed information about requests
-    std::map<ctx, std::shared_ptr<request_multipart_parser>> mRequestContexts;
-
-    // Callback to receive requests
-    typedef std::function<void(http_server& server, ctx ctx, const request_info& ri)> request_get_handler;
-
-    void set_handler(const request_get_handler& handler);
-    void send_json(ctx ctx, const std::string& body);
-    void send_html(ctx ctx, const std::string& body);
-    void send_error(ctx ctx, int code, const std::string& reason = "");
-
-private:
-    uint16_t mPort = 8080;
-    evhttp* mHttpContext = nullptr;
-    event_base* mIoContext = nullptr;
-    std::shared_ptr<std::thread> mWorkerThread;
-    request_get_handler mHandler;
-    std::atomic_bool mTerminated;
-
-    void worker();
-    static void process_callback(struct evhttp_request *request, void *arg);
-    void process_request(evhttp_request* request);
-    request_multipart_parser& find_request_parser(ctx request);
-};
-
 class http_client
 {
 public:
-    http_client();
+    http_client(int timeout_in_seconds = 60);
     ~http_client();
 
     struct response_info
@@ -115,7 +75,13 @@ public:
     typedef void* ctx;
 
     typedef std::function<void(http_client& client, ctx ctx, response_info& ri)> response_handler;
-    ctx get(const std::string& url, response_handler handler);
+    enum connection_kind
+    {
+        connection_close,
+        connection_keepalive
+    };
+
+    ctx get(const std::string& url, connection_kind kind, response_handler handler);
 
     event_base* getIoContext();
 private:
@@ -126,6 +92,7 @@ private:
     std::shared_ptr<std::thread> mWorkerThread;
     std::mutex mMutex;
     std::atomic_bool mTerminated;
+    int mTimeoutInSeconds = 0;
 
     void worker();
     static void process_data_callback(evhttp_request* request, void* tag);
@@ -143,11 +110,11 @@ private:
 #if defined(ENABLE_MULTI_THREAD_SERVER)
 #include <evhtp/evhtp.h>
 
-class http_server_multi
+class http_server
 {
 public:
-    http_server_multi();
-    ~http_server_multi();
+    http_server();
+    ~http_server();
 
     void setPort(uint16_t port);
     uint16_t port() const;
@@ -166,16 +133,27 @@ public:
     std::map<ctx, std::shared_ptr<request_multipart_parser>> mRequestContexts;
 
     // Callback to receive requests
-    typedef std::function<void(http_server_multi& server, ctx ctx, const request_info& ri)> request_get_handler;
+    typedef std::function<void(http_server& server, ctx ctx, const request_info& ri)> request_get_handler;
 
     // Callback to receive notification about expired request
-    typedef std::function<void(http_server_multi& server, ctx ctx)> request_expired_handler;
+    typedef std::function<void(http_server& server, ctx ctx)> request_expired_handler;
 
     void set_handler(const request_get_handler& handler);
     void set_handler(const request_expired_handler& handler);
 
+    enum content_type
+    {
+        content_type_html,
+        content_type_json
+    };
+
+    void set_content_type(ctx ctx, content_type ct);
+    void set_content_type(ctx ctx, const std::string& ct);
+
+    // One-liners to send JSON/HTML and close connection (most probably)
     void send_json(ctx ctx, const std::string& body);
     void send_html(ctx ctx, const std::string& body);
+
     void send_error(ctx ctx, int code, const std::string& reason = "");
 
     void send_redirect(ctx ctx, const std::string& uri);
@@ -189,6 +167,8 @@ public:
     void send_chunk_data(ctx ctx, const void* data, size_t len);
     void send_chunk_finish(ctx ctx);
 
+    void set_keepalive(ctx ctx, bool keepalive);
+    void set_maxbodysize(ctx ctx, size_t size);
 
 private:
     uint16_t mPort = 8080;
