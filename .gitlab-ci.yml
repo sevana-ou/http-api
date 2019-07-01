@@ -1,5 +1,6 @@
 build_exe:
   script:
+    - "echo $PATH"
     - "mkdir -p build"
     - "cd build"
     - "cmake ../test/server"
