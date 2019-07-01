@@ -8,7 +8,7 @@ int main(int /*argc*/, char** /*argv*/)
     std::atomic_bool exit_flag(false);
 
     // Test simple GET
-    client.get("http://voipobjects.com/", [&exit_flag](http_client& /*client*/, http_client::ctx /*ctx*/, http_client::response_info& info)
+    client.get("http://voipobjects.com/", http_client::connection_close, [&exit_flag](http_client& /*client*/, http_client::ctx /*ctx*/, http_client::response_info& info)
     {
         if (info.mChunk.size() == 0)
         {
@@ -33,7 +33,7 @@ int main(int /*argc*/, char** /*argv*/)
         timer_counter++;
 
         // Test simple GET
-        client.get("http://voipobjects.com/", [](http_client& /*client*/, http_client::ctx /*ctx*/, http_client::response_info& info)
+        client.get("http://voipobjects.com/", http_client::connection_close, [](http_client& /*client*/, http_client::ctx /*ctx*/, http_client::response_info& info)
         {
             if (info.mChunk.size() == 0)
             {
