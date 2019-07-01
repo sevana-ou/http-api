@@ -10,13 +10,7 @@
 
 using namespace std::chrono;
 
-#if defined(ENABLE_MULTI_THREAD_SERVER)
-typedef http_server_multi my_http_server;
-#else
-typedef http_server my_http_server;
-#endif
-
-static std::shared_ptr<my_http_server> DashboardServer;
+static std::shared_ptr<http_server> DashboardServer;
 static time_point<steady_clock> StartTime = steady_clock::now();
 
 const std::string Html_Ok = "<html><body>"
@@ -46,17 +40,17 @@ static std::string apply_vars(const std::string& templ, const std::map<std::stri
 
 static std::shared_ptr<std::thread> delayed_thread;
 static std::mutex alive_requests_mutex;
-static std::set<my_http_server::ctx> alive_requests;
+static std::set<http_server::ctx> alive_requests;
 
 void dashboard_start(int port, std::atomic_bool& exit_flag)
 {
     if (!port)
         return;
 
-    DashboardServer = std::make_shared<my_http_server>();
+    DashboardServer = std::make_shared<http_server>();
     DashboardServer->setPort(static_cast<uint16_t>(port));
 
-    DashboardServer->set_handler([](my_http_server& /*server*/, my_http_server::ctx ctx)
+    DashboardServer->set_handler([](http_server& /*server*/, http_server::ctx ctx)
     {
         std::unique_lock<std::mutex> l(alive_requests_mutex);
 
@@ -67,7 +61,7 @@ void dashboard_start(int port, std::atomic_bool& exit_flag)
         std::cout << "Request is finished." << std::endl;
     });
 
-    DashboardServer->set_handler([&exit_flag](my_http_server& server, http_server::ctx ctx, const request_info& info)
+    DashboardServer->set_handler([&exit_flag](http_server& server, http_server::ctx ctx, const request_info& info)
     {
         if (info.mMethod == Method_GET)
         {
