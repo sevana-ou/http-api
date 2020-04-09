@@ -21,7 +21,7 @@ set (SRC http_api.cpp)
 set (HDR http_api.h multipart_reader.h multipart_parser.h)
 add_library(http_lib STATIC ${SRC} ${HDR})
 
-target_include_directories(http_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(http_lib INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 
 #find_library(LIBEVENT libevent.a)
 #find_library(LIBEVENT_PTHREADS libevent_pthreads.a)
