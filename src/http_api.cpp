@@ -174,6 +174,7 @@ void request_multipart_parser::handle_part_begin(const MultipartHeaders& headers
                         if (value.front() == '"' && value.back() == '"')
                             value = value.substr(1, value.size() - 2);
                     }
+
                     if (name == "filename")
                     {
                         mCurrentFilename = value;
@@ -197,9 +198,16 @@ void request_multipart_parser::handle_part_data(const char* buffer, size_t lengt
 
 void request_multipart_parser::handle_part_end()
 {
-    mInfo.mParams.insert(std::make_pair("content", mCurrentData));
-    if (mCurrentFilename.size())
+    if (mCurrentFilename.empty())
+    {
+        // Usual parameter
+        mInfo.mParams.insert(std::make_pair(mCurrentName, mCurrentData));
+    }
+    else
+    {
+        mInfo.mParams.insert(std::make_pair("content", mCurrentData));
         mInfo.mParams.insert(std::make_pair("filename", mCurrentFilename));
+    }
 }
 
 
@@ -535,7 +543,7 @@ void http_server::stop()
 void http_server::worker()
 {
 #if defined(TARGET_LINUX)
-    pthread_setname_np(pthread_self(), "http_server_multi");
+    pthread_setname_np(pthread_self(), "http_server");
 #endif
     while (!mTerminated)
     {
