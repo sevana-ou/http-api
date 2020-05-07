@@ -629,7 +629,7 @@ void http_server::process_request(evhtp_request *request)
                 parser.mMultipartReader->feed(body, body_size);
                 if (parser.mMultipartReader->succeeded())
                 {
-                    ;
+                    // Do nothing here
                 }
             }
             else
@@ -639,12 +639,15 @@ void http_server::process_request(evhtp_request *request)
             delete[] body; body = nullptr;
 
             parser.mInfo.mMethod = Method_POST;
-            mHandler(*this, request, parser.mInfo);
+            auto ctx_ownership = mHandler(*this, request, parser.mInfo);
 
             // Remove used parser instance
-            auto iter = mRequestContexts.find(request);
-            if (iter != mRequestContexts.end())
-                mRequestContexts.erase(iter);
+            if (ctx_ownership == context_finish)
+            {
+                auto iter = mRequestContexts.find(request);
+                if (iter != mRequestContexts.end())
+                    mRequestContexts.erase(iter);
+            }
         }
         else
         {
@@ -764,6 +767,11 @@ void http_server::send_html(void* ctx, const std::string& body)
     if (!ctx)
         return;
 
+    evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
+    std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+    if (mRequestContexts.find(request) == mRequestContexts.end())
+        return;
+
     set_content_type(ctx, content_type_html);
     send_chunk_reply(ctx, EVHTP_RES_200);
     send_chunk_data(ctx, body.c_str(), body.size());
@@ -807,7 +815,7 @@ void http_server::send_chunk_reply(ctx ctx, int code)
     if (mRequestContexts.find(request) == mRequestContexts.end())
         return;
 
-    evhtp_send_reply_chunk_start(request, code);
+    evhtp_send_reply_chunk_start(request, static_cast<evhtp_res>(code));
 }
 
 void http_server::send_chunk_data(ctx ctx, const void* data, size_t len)

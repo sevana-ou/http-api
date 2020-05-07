@@ -132,8 +132,14 @@ public:
     std::recursive_mutex mRequestContextsMutex;
     std::map<ctx, std::shared_ptr<request_multipart_parser>> mRequestContexts;
 
+    enum context_ownership
+    {
+        context_retain,
+        context_finish
+    };
+
     // Callback to receive requests
-    typedef std::function<void(http_server& server, ctx ctx, const request_info& ri)> request_get_handler;
+    typedef std::function<context_ownership(http_server& server, ctx ctx, const request_info& ri)> request_get_handler;
 
     // Callback to receive notification about expired request
     typedef std::function<void(http_server& server, ctx ctx)> request_expired_handler;
