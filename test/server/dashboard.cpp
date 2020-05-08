@@ -61,7 +61,7 @@ void dashboard_start(int port, std::atomic_bool& exit_flag)
         std::cout << "Request is finished." << std::endl;
     });
 
-    DashboardServer->set_handler([&exit_flag](http_server& server, http_server::ctx ctx, const request_info& info)
+    DashboardServer->set_handler([&exit_flag](http_server& server, http_server::ctx ctx, const request_info& info) -> http_server::context_ownership
     {
         if (info.mMethod == Method_GET)
         {
@@ -137,6 +137,8 @@ void dashboard_start(int port, std::atomic_bool& exit_flag)
         }
         else
             server.send_error(ctx, 405);
+
+        return http_server::context_ownership::context_finish;
     });
 
     DashboardServer->start();
