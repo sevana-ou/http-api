@@ -495,7 +495,12 @@ void http_server::start()
     mHttpContext = evhtp_new(mIoContext, this);
 
     // Just to be safe
-    evhtp_use_callback_locks(mHttpContext);
+    if (evhtp_use_callback_locks(mHttpContext) == -1)
+    {
+        evhtp_free(mHttpContext); mHttpContext = nullptr;
+        event_base_free(mIoContext); mIoContext = nullptr;
+        return;
+    }
 
     evhtp_enable_flag(mHttpContext, EVHTP_FLAG_ENABLE_ALL);
     auto callback = evhtp_set_cb(mHttpContext, "/", &on_http_request, this);
@@ -740,6 +745,7 @@ void http_server::set_content_type(ctx ctx, const std::string& ct)
         return;
 
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
+
     // Look for already set Content-Type header
     evhtp_kv_t* ct_header = evhtp_kvs_find_kv(request->headers_out, "Content-Type");
     if (ct_header)
@@ -768,9 +774,11 @@ void http_server::send_html(void* ctx, const std::string& body)
         return;
 
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
-    std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
-    if (mRequestContexts.find(request) == mRequestContexts.end())
-        return;
+    {
+        std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+        if (mRequestContexts.find(request) == mRequestContexts.end())
+            return;
+    }
 
     set_content_type(ctx, content_type_html);
     send_chunk_reply(ctx, EVHTP_RES_200);
@@ -781,10 +789,11 @@ void http_server::send_html(void* ctx, const std::string& body)
 void http_server::send_error(void *ctx, int code, const std::string &/*reason*/)
 {
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
-    std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
-    if (mRequestContexts.find(request) == mRequestContexts.end())
-        return;
-
+    {
+        std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+        if (mRequestContexts.find(request) == mRequestContexts.end())
+            return;
+    }
     evhtp_send_reply(reinterpret_cast<evhtp_request*>(ctx), static_cast<evhtp_res>(code));
 }
 
@@ -825,9 +834,11 @@ void http_server::send_chunk_data(ctx ctx, const void* data, size_t len)
         return;
 
     // Check if request is alive yet
-    std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
-    if (mRequestContexts.find(req) == mRequestContexts.end())
-        return;
+    {
+        std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+        if (mRequestContexts.find(req) == mRequestContexts.end())
+            return;
+    }
 
     evbuffer* buf = evbuffer_new();
     evbuffer_add(buf, data, len);
