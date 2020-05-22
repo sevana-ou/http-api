@@ -450,6 +450,13 @@ evhtp_res http_server::on_http_request_finalization(evhtp_request_t *req, void *
     return EVHTP_RES_OK;
 }
 
+void http_server::on_process_response_queue(evutil_socket_t, short, void *ctx)
+{
+    http_server* server = reinterpret_cast<http_server*>(ctx);
+    if (server)
+        server->process_response_queue();
+}
+
 static void on_http_error(evhtp_request_t* req, evhtp_error_flags errtype, void* arg)
 {
 
@@ -469,29 +476,39 @@ http_server::~http_server()
     stop();
 }
 
-void http_server::setPort(uint16_t port)
+void http_server::set_port(uint16_t port)
 {
     mPort = port;
 }
 
-uint16_t http_server::port() const
+uint16_t http_server::get_port() const
 {
     return mPort;
 }
 
-void http_server::setNrOfThreads(size_t nr)
+void http_server::set_threads(size_t nr)
 {
     mNumberOfThreads = nr;
 }
 
-size_t http_server::nrOfThreads() const
+size_t http_server::get_threads() const
 {
     return mNumberOfThreads;
 }
 
+
+static void evhtp_thread_init(evhtp_t * htp, evthr_t * thr, void * arg)
+{
+#if defined(TARGET_LINUX) || defined(TARGET_OSX)
+    pthread_setname_np(pthread_self(), "evhtp");
+#endif
+}
+
 void http_server::start()
 {
+    mRequestCounter = 0;
     mIoContext = event_base_new();
+    mResponseQueueEvent = event_new(mIoContext, -1, 0, &http_server::on_process_response_queue, this);
     mHttpContext = evhtp_new(mIoContext, this);
 
     // Just to be safe
@@ -503,18 +520,23 @@ void http_server::start()
     }
 
     evhtp_enable_flag(mHttpContext, EVHTP_FLAG_ENABLE_ALL);
-    auto callback = evhtp_set_cb(mHttpContext, "/", &on_http_request, this);
-    evhtp_callback_set_hook(callback, evhtp_hook_on_request_fini,
+    auto callback_request_finish = evhtp_set_cb(mHttpContext, "/", &on_http_request, this);
+    evhtp_callback_set_hook(callback_request_finish, evhtp_hook_on_request_fini,
                             reinterpret_cast<evhtp_hook>(&on_http_request_finalization), this);
 
     int rescode = evhtp_bind_socket(mHttpContext, "ipv4:0.0.0.0", mPort, 5);
-    size_t nr_of_threads = mNumberOfThreads ? mNumberOfThreads : std::thread::hardware_concurrency();
-    if (!nr_of_threads)
-        nr_of_threads = 1;
+    if (rescode == -1)
+    {
+        evhtp_free(mHttpContext); mHttpContext = nullptr;
+        event_base_free(mIoContext); mIoContext = nullptr;
+        return;
+    }
 
-    evhtp_use_threads_wexit(mHttpContext, nullptr, nullptr, static_cast<int>(nr_of_threads), nullptr);
+    // Create worker I/O threads
+    if (mNumberOfThreads)
+        evhtp_use_threads_wexit(mHttpContext, &evhtp_thread_init, nullptr, static_cast<int>(mNumberOfThreads), nullptr);
 
-    // Start worker listener thread
+    // Start listener thread. If nr_of_threads == 0 - it will be acceptor thread too.
     mTerminated = false;
     mWorkerThread = std::make_shared<std::thread>(&http_server::worker, this);
 }
@@ -523,7 +545,6 @@ void http_server::stop()
 {
     if (!mIoContext)
         return;
-
 
     if (mHttpContext)
     {
@@ -542,6 +563,7 @@ void http_server::stop()
         mWorkerThread.reset();
     }
 
+    event_free(mResponseQueueEvent); mResponseQueueEvent = nullptr;
     event_base_free(mIoContext); mIoContext = nullptr;
 }
 
@@ -552,16 +574,24 @@ void http_server::worker()
 #endif
     while (!mTerminated)
     {
-        event_base_loop(mIoContext, 0);
+        // event_base_loop(mIoContext, 0);
+        try
+        {
+            event_base_dispatch(mIoContext);
+        }
+        catch (...)
+        {
+            std::cerr << "Strange libevent error" << std::endl;
+        }
         //std::cout << "event_base_loop exit." << std::endl;
     }
 }
 
 void http_server::process_request(evhtp_request *request)
 {
-    // Find context structure
-    std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+    mRequestCounter++;
 
+    // Find context structure
     request_multipart_parser& parser = find_request_parser(request);
     parser.mInfo.mPath = request->uri->path->full ? request->uri->path->full : std::string();
 
@@ -573,6 +603,8 @@ void http_server::process_request(evhtp_request *request)
         parser.mInfo.mHeaders.insert(std::make_pair(hdr_kv->key, hdr_kv->val ? std::string(hdr_kv->val) : std::string()));
         hdr_kv = hdr_kv->next.tqe_next;
     }
+
+    http_request_ownership ownership = ownership_none;
 
     if (request->method == htp_method_GET)
     {
@@ -594,7 +626,7 @@ void http_server::process_request(evhtp_request *request)
             // Call handler
             parser.mInfo.mParams = params;
             parser.mInfo.mMethod = Method_GET;
-            mHandler(*this, request, parser.mInfo);
+            mHandler(*this, request, parser.mInfo, ownership);
         }
         else
         {
@@ -644,15 +676,12 @@ void http_server::process_request(evhtp_request *request)
             delete[] body; body = nullptr;
 
             parser.mInfo.mMethod = Method_POST;
-            auto ctx_ownership = mHandler(*this, request, parser.mInfo);
-
-            // Remove used parser instance
-            if (ctx_ownership == context_finish)
+            try
             {
-                auto iter = mRequestContexts.find(request);
-                if (iter != mRequestContexts.end())
-                    mRequestContexts.erase(iter);
+                mHandler(*this, request, parser.mInfo, ownership);
             }
+            catch(...)
+            {}
         }
         else
         {
@@ -664,17 +693,27 @@ void http_server::process_request(evhtp_request *request)
         // Send default answer
         evhtp_send_reply(request, EVHTP_RES_NOTIMPL);
     }
+
+    // Remove used parser instance
+    if (ownership == ownership_none)
+    {
+        auto iter = mRequestContexts.find(request);
+        if (iter != mRequestContexts.end())
+            mRequestContexts.erase(iter);
+    }
+    std::cout << "Request :" << mRequestCounter << std::endl;
 }
 
 void http_server::process_request_finalization(evhtp_request_t *request)
 {
     try
     {
-        std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
-
-        auto iter = mRequestContexts.find(request);
-        if (iter != mRequestContexts.end())
-            mRequestContexts.erase(iter);
+        {
+            std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+            auto iter = mRequestContexts.find(request);
+            if (iter != mRequestContexts.end())
+                mRequestContexts.erase(iter);
+        }
 
         if (mExpiredHandler)
             mExpiredHandler(*this, request);
@@ -683,8 +722,24 @@ void http_server::process_request_finalization(evhtp_request_t *request)
     {}
 }
 
+void http_server::process_response_queue()
+{
+    try
+    {
+        {
+            std::unique_lock<std::mutex> l(mResponseQueueMutex);
+            for (auto& item: mResponseQueue)
+                item.mCallback(item.mCtx);
+            mResponseQueue.clear();
+        }
+    }
+    catch(...)
+    {}
+}
+
 request_multipart_parser& http_server::find_request_parser(ctx request)
 {
+    std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
     std::shared_ptr<request_multipart_parser> result;
 
     auto iter = mRequestContexts.find(request);
@@ -794,6 +849,7 @@ void http_server::send_error(void *ctx, int code, const std::string &/*reason*/)
         if (mRequestContexts.find(request) == mRequestContexts.end())
             return;
     }
+
     evhtp_send_reply(reinterpret_cast<evhtp_request*>(ctx), static_cast<evhtp_res>(code));
 }
 
@@ -805,9 +861,11 @@ void http_server::send_redirect(ctx ctx, const std::string& uri)
 void http_server::send_headers(ctx ctx, const response_headers& headers)
 {
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
-    std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
-    if (mRequestContexts.find(request) == mRequestContexts.end())
-        return;
+    {
+        std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+        if (mRequestContexts.find(request) == mRequestContexts.end())
+            return;
+    }
 
     for (auto& hdr: headers)
     {
@@ -819,10 +877,11 @@ void http_server::send_headers(ctx ctx, const response_headers& headers)
 void http_server::send_chunk_reply(ctx ctx, int code)
 {
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
-
-    std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
-    if (mRequestContexts.find(request) == mRequestContexts.end())
-        return;
+    {
+        std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+        if (mRequestContexts.find(request) == mRequestContexts.end())
+            return;
+    }
 
     evhtp_send_reply_chunk_start(request, static_cast<evhtp_res>(code));
 }
@@ -851,15 +910,18 @@ void http_server::send_chunk_finish(ctx ctx)
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
     if (!request)
         return;
+
     evhtp_send_reply_chunk_end(request);
 }
 
 void http_server::send_content(ctx ctx, const std::string &content)
 {
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
-    std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
-    if (mRequestContexts.find(request) == mRequestContexts.end())
-        return;
+    {
+        std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+        if (mRequestContexts.find(request) == mRequestContexts.end())
+            return;
+    }
 
     evbuffer* buffer = evbuffer_new();
     evbuffer_add(buffer, content.c_str(), content.size());
@@ -879,8 +941,68 @@ void http_server::set_maxbodysize(ctx ctx, size_t size)
     evhtp_request_set_max_body_size(reinterpret_cast<evhtp_request*>(ctx), size);
 }
 
-#endif
+size_t http_server::get_number_of_requests() const
+{
+    return static_cast<size_t>(mRequestCounter.load());
+}
 
+/*
+    struct queued_response
+    {
+        ctx mCtx;
+        std::function<void(ctx&)> mCallback;
+    };
+    std::mutex mResponseQueueMutex;
+    std::vector<queued_response> mResponseQueue;
+    event* mResponseQueueEvent = nullptr;
+*/
+
+#define QUEUE_ITEM(X) \
+    std::unique_lock<std::mutex> l(mResponseQueueMutex);    \
+    mResponseQueue.push_back(qr);                           \
+    event_active(mResponseQueueEvent, 0, 0)
+
+void http_server::queue_json(ctx ctx, const std::string& body)
+{
+    std::string b = body;
+    queued_response qr{
+        ctx,
+        [this, b](http_server::ctx& ctx)
+        {
+            this->send_json(ctx, b);
+        }
+    };
+    QUEUE_ITEM(qr);
+}
+
+void http_server::queue_html(ctx ctx, const std::string& body)
+{
+    std::string b = body;
+    queued_response qr{
+        ctx,
+        [this, b](http_server::ctx& ctx)
+        {
+            this->send_html(ctx, b);
+        }
+    };
+    QUEUE_ITEM(qr);
+}
+
+void http_server::queue_error(ctx ctx, int code, const std::string& reason)
+{
+    std::string r = reason;
+    queued_response qr{
+        ctx,
+        [this, code, r](http_server::ctx& ctx)
+        {
+            this->send_error(ctx, code, r);
+        }
+    };
+    QUEUE_ITEM(qr);
+
+}
+
+#endif
 
 // ----------------- timer ---------------------
 static void timer_callback(evutil_socket_t, short, void* arg)

@@ -26,7 +26,6 @@ enum http_method
     Method_POST
 };
 
-
 // Request parameters & info
 class request_params: public std::multimap<std::string, std::string>
 {
@@ -116,11 +115,11 @@ public:
     http_server();
     ~http_server();
 
-    void setPort(uint16_t port);
-    uint16_t port() const;
+    void set_port(uint16_t port);
+    uint16_t get_port() const;
 
-    void setNrOfThreads(size_t nr);
-    size_t nrOfThreads() const;
+    void set_threads(size_t nr);
+    size_t get_threads() const;
 
     void start();
     void stop();
@@ -132,14 +131,14 @@ public:
     std::recursive_mutex mRequestContextsMutex;
     std::map<ctx, std::shared_ptr<request_multipart_parser>> mRequestContexts;
 
-    enum context_ownership
+    enum http_request_ownership
     {
-        context_retain,
-        context_finish
+        ownership_retain,
+        ownership_none
     };
 
     // Callback to receive requests
-    typedef std::function<context_ownership(http_server& server, ctx ctx, const request_info& ri)> request_get_handler;
+    typedef std::function<void(http_server& server, ctx ctx, const request_info& ri, http_request_ownership& ownership)> request_get_handler;
 
     // Callback to receive notification about expired request
     typedef std::function<void(http_server& server, ctx ctx)> request_expired_handler;
@@ -156,10 +155,11 @@ public:
     void set_content_type(ctx ctx, content_type ct);
     void set_content_type(ctx ctx, const std::string& ct);
 
+    // All send_ZZZ methods can be used only from internal threads like listener or accept threads.
+    // The sending content from another threads (for example from own thread pool) should be done via queue_ZZZ methods.
     // One-liners to send JSON/HTML and close connection (most probably)
     void send_json(ctx ctx, const std::string& body);
     void send_html(ctx ctx, const std::string& body);
-
     void send_error(ctx ctx, int code, const std::string& reason = "");
 
     void send_redirect(ctx ctx, const std::string& uri);
@@ -176,6 +176,12 @@ public:
     void set_keepalive(ctx ctx, bool keepalive);
     void set_maxbodysize(ctx ctx, size_t size);
 
+    size_t get_number_of_requests() const;
+
+    void queue_json(ctx ctx, const std::string& body);
+    void queue_html(ctx ctx, const std::string& body);
+    void queue_error(ctx ctx, int code, const std::string& reason = "");
+
 private:
     uint16_t mPort = 8080;
     event_base* mIoContext = nullptr;
@@ -186,13 +192,25 @@ private:
     std::atomic_bool mTerminated;
     evhtp* mHttpContext = nullptr;
     size_t mNumberOfThreads = 0;
+    std::atomic_llong mRequestCounter;
+
+    struct queued_response
+    {
+        ctx mCtx;
+        std::function<void(ctx&)> mCallback;
+    };
+    std::mutex mResponseQueueMutex;
+    std::vector<queued_response> mResponseQueue;
+    event* mResponseQueueEvent = nullptr;
 
     void worker();
     static void on_http_request(evhtp_request_t* req, void* arg);
     static evhtp_res on_http_request_finalization(evhtp_request_t* req, void* arg);
+    static void on_process_response_queue(evutil_socket_t, short, void *);
 
     void process_request(evhtp_request_t* request);
     void process_request_finalization(evhtp_request_t* request);
+    void process_response_queue();
 
     request_multipart_parser& find_request_parser(ctx request);
 };

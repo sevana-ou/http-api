@@ -78,13 +78,13 @@ private:
     }
     
     static void cbHeadersEnd(const char *buffer, size_t start, size_t end, void *userData) {
-	MultipartReader *self = (MultipartReader *) userData;
-	if (self->onPartBegin != NULL) {
-	    self->onPartBegin(self->currentHeaders, self->userData);
-	}
-	self->currentHeaders.clear();
-	self->currentHeaderName.clear();
-	self->currentHeaderValue.clear();
+        MultipartReader *self = (MultipartReader *) userData;
+        if (self->onPartBegin != NULL) {
+            self->onPartBegin(self->currentHeaders, self->userData);
+        }
+        self->currentHeaders.clear();
+        self->currentHeaderName.clear();
+        self->currentHeaderValue.clear();
     }
     
     static void cbPartData(const char *buffer, size_t start, size_t end, void *userData) {
