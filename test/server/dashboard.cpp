@@ -48,8 +48,7 @@ void dashboard_start(int port, std::atomic_bool& exit_flag)
         return;
 
     DashboardServer = std::make_shared<http_server>();
-    DashboardServer->setPort(static_cast<uint16_t>(port));
-
+    DashboardServer->set_port(static_cast<uint16_t>(port));
     DashboardServer->set_handler([](http_server& /*server*/, http_server::ctx ctx)
     {
         std::unique_lock<std::mutex> l(alive_requests_mutex);
@@ -61,7 +60,8 @@ void dashboard_start(int port, std::atomic_bool& exit_flag)
         std::cout << "Request is finished." << std::endl;
     });
 
-    DashboardServer->set_handler([&exit_flag](http_server& server, http_server::ctx ctx, const request_info& info) -> http_server::context_ownership
+    DashboardServer->set_handler([&exit_flag](http_server& server, http_server::ctx ctx, const request_info& info,
+                                              http_server::http_request_ownership& ownership)
     {
         if (info.mMethod == Method_GET)
         {
@@ -138,7 +138,7 @@ void dashboard_start(int port, std::atomic_bool& exit_flag)
         else
             server.send_error(ctx, 405);
 
-        return http_server::context_ownership::context_finish;
+        ownership = http_server::http_request_ownership::ownership_none;
     });
 
     DashboardServer->start();
