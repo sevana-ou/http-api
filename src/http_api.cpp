@@ -499,7 +499,7 @@ size_t http_server::get_threads() const
 
 static void evhtp_thread_init(evhtp_t * htp, evthr_t * thr, void * arg)
 {
-#if defined(TARGET_LINUX) || defined(TARGET_OSX)
+#if defined(TARGET_LINUX)
     pthread_setname_np(pthread_self(), "evhtp");
 #endif
 }
@@ -701,7 +701,7 @@ void http_server::process_request(evhtp_request *request)
         if (iter != mRequestContexts.end())
             mRequestContexts.erase(iter);
     }
-    std::cout << "Request :" << mRequestCounter << std::endl;
+    // std::cout << "Request :" << mRequestCounter << std::endl;
 }
 
 void http_server::process_request_finalization(evhtp_request_t *request)
