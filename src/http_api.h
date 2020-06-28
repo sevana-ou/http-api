@@ -34,6 +34,7 @@ public:
     int             get_int(const std::string& name, int default_value = 0) const;
     std::set<int>   get_int_set(const std::string& name) const;
     std::string     get_string(const std::string& name, const std::string& default_value = std::string()) const;
+    std::set<std::string> get_string_set(const std::string& name) const;
 };
 
 typedef std::multimap<std::string, std::string> request_headers;

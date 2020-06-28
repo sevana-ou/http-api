@@ -73,6 +73,26 @@ std::string request_params::get_string(const std::string& name, const std::strin
         return default_value;
 }
 
+std::set<std::string> request_params::get_string_set(const std::string& name) const
+{
+    std::set<std::string> result;
+    try
+    {
+        auto iter = find(name);
+        while (iter != end())
+        {
+            std::string t = iter->second;
+            if (!result.count(t))
+                result.insert(t);
+            iter++;
+        }
+    }
+    catch(...)
+    {}
+
+    return result;
+}
+
 // ------------- http_server -----------------
 void broken_pipe(int /*signum*/)
 {
