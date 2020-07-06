@@ -78,13 +78,12 @@ std::set<std::string> request_params::get_string_set(const std::string& name) co
     std::set<std::string> result;
     try
     {
-        auto iter = find(name);
-        while (iter != end())
+        auto iter_pair = equal_range(name);
+        for (auto iter = iter_pair.first; iter != iter_pair.second; iter++)
         {
             std::string t = iter->second;
             if (!result.count(t))
                 result.insert(t);
-            iter++;
         }
     }
     catch(...)
