@@ -229,7 +229,79 @@ void request_multipart_parser::handle_part_end()
     }
 }
 
+typedef enum {Variable, Value, Hex1, Hex2} State;
+static void parse_urlencoded_data(request_params& params, const char* buffer_ptr, size_t buffer_len)
+{
+      State state;
+      std::string param_name, param_value;
+      char *length, c, hexchar = 0; /* Init'ed to stop -Wall */
+      FILE *f = NULL;
+      size_t i, len = buffer_len;
 
+      for (state = Variable; len > 0; len--)
+      {
+        c = *buffer_ptr++;
+
+        switch (state)
+        {
+        case Variable:				/* Scanning name of var */
+            if (c == '=')
+            {
+                state = Value;
+            }
+            else
+            if (isalnum(c))
+                param_name += c;
+            break;
+
+        case Value:				/* Scanning a value */
+            if (c == ';' || c == '&')
+            {
+                params.insert(std::make_pair(param_name, param_value));
+                state = Variable;
+            }
+            else
+            if (c == '%')
+            {
+                state = Hex1;
+            }
+            else
+            {
+                param_value += (c == '+' ? ' ' : c);
+            }
+            break;
+
+          case Hex1:				/* 1st char after '%' */
+            state = Hex2;
+            if ('0' <= c && c <= '9')
+                hexchar = c - '0';
+            else
+            if ('A' <= c && c <= 'F')
+                hexchar = c - 'A' + 10;
+            else
+            if ('a' <= c && c <= 'f')
+                hexchar = c - 'a' + 10;
+            else
+                state = Value;			/* Error, skip char... */
+            break;
+
+          case Hex2:				/* 2nd char after '%' */
+            if ('0' <= c && c <= '9')
+                param_value += char(16 * hexchar + c - '0');
+            else
+            if ('A' <= c && c <= 'F')
+                param_value += char(16 * hexchar + c - 'A' + 10);
+            else
+            if ('a' <= c && c <= 'f')
+                param_value += char(16 * hexchar + c - 'a' + 10);
+            else
+                ;					/* Error, skip char... */
+            state = Value;
+            break;
+
+        }
+    }
+}
 
 // ------------ http_client --------------
 http_client::http_client(int timeout_in_seconds)
@@ -515,6 +587,16 @@ size_t http_server::get_threads() const
     return mNumberOfThreads;
 }
 
+void http_server::set_urlencoded_formdata_parser_enabled(bool parse_formdata)
+{
+    mUrlencodedFormDataParserEnabled = parse_formdata;
+}
+
+bool http_server::get_urlencoded_formdata_parser_enabled() const
+{
+    return mUrlencodedFormDataParserEnabled;
+}
+
 
 static void evhtp_thread_init(evhtp_t * htp, evthr_t * thr, void * arg)
 {
@@ -658,13 +740,13 @@ void http_server::process_request(evhtp_request *request)
     {
         if (mHandler)
         {
-            std::string boundary;
+            std::string boundary, content_type;
             if (parser.mInfo.mHeaders.count("Content-Type"))
             {
                 auto iter = parser.mInfo.mHeaders.find("Content-Type");
                 if (iter != parser.mInfo.mHeaders.end())
                 {
-                    std::string content_type = iter->second;
+                    content_type = iter->second;
                     if (content_type.find("multipart/form-data") != std::string::npos)
                     {
                         std::string::size_type p = content_type.find("boundary=");
@@ -686,6 +768,20 @@ void http_server::process_request(evhtp_request *request)
                 if (parser.mMultipartReader->succeeded())
                 {
                     // Do nothing here
+                }
+            }
+            else
+            if (content_type.find("urlencoded") != std::string::npos)
+            {
+                if (mUrlencodedFormDataParserEnabled)
+                {
+                    parse_urlencoded_data(parser.mInfo.mParams, body, body_size);
+                }
+                else
+                {
+                    // Skip 4 bytes
+                    parser.mInfo.mParams.insert(std::make_pair("content", std::string(body, body_size)));
+                    parser.mInfo.mParams.insert(std::make_pair("filename", "1.pcap"));
                 }
             }
             else
