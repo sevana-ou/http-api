@@ -2,13 +2,15 @@
 
 #include <iostream>
 
-int main(int /*argc*/, char** /*argv*/)
+int main(int argc, char** argv)
 {
     http_client client;
     std::atomic_bool exit_flag(false);
 
+    const char* url = argc > 1 ? argv[1] : "http://voipobjects.com/";
+
     // Test simple GET
-    client.get("http://voipobjects.com/", http_client::connection_close, [&exit_flag](http_client& /*client*/, http_client::ctx /*ctx*/, http_client::response_info& info)
+    client.get(url, http_client::connection_close, [&exit_flag](http_client& /*client*/, http_client::ctx /*ctx*/, http_client::response_info& info)
     {
         if (info.mChunk.size() == 0)
         {

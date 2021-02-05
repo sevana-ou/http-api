@@ -1,4 +1,4 @@
-project(http-client-test)
+project(http_client_test)
 
 cmake_minimum_required(VERSION 3.1)
 

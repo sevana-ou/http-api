@@ -1,4 +1,4 @@
-project(http-api-test)
+project(http_server_test)
 
 cmake_minimum_required(VERSION 3.1)
 

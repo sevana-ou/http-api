@@ -323,6 +323,7 @@ http_client::~http_client()
     mTerminated = true;
     if (mIoContext)
         event_base_loopbreak(mIoContext);
+
     if (mWorkerThread)
     {
         if (mWorkerThread->joinable())

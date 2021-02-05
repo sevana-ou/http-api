@@ -23,9 +23,9 @@ add_library(http_lib STATIC ${SRC} ${HDR})
 
 target_include_directories(http_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../lib/evhtp/include)
 
-#find_library(LIBEVENT libevent.a)
-#find_library(LIBEVENT_PTHREADS libevent_pthreads.a)
-#target_link_libraries(http_client_test pthread ${LIBEVENT} ${LIBEVENT_PTHREADS})
+# find_library(LIBEVENT libevent.a)
+# find_library(LIBEVENT_PTHREADS libevent_pthreads.a)
+# target_link_libraries(http_client_test pthread ${LIBEVENT} ${LIBEVENT_PTHREADS})
 
 if (TARGET_LINUX)
     target_compile_definitions(http_lib PRIVATE -DTARGET_LINUX)
