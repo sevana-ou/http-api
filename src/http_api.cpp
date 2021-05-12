@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cctype>
 #include <locale>
+#include <fstream>
 
 #include "multipart_parser.h"
 #include "multipart_reader.h"
@@ -697,6 +698,9 @@ void http_server::process_request(evhtp_request *request)
     request_multipart_parser& parser = find_request_parser(request);
     parser.mInfo.mPath = request->uri->path->full ? request->uri->path->full : std::string();
 
+    if (mLoggingHandler)
+        mLoggingHandler(*this, "Incoming request to: " + parser.mInfo.mPath);
+
     // Find headers
     evhtp_kvs* hdr_queue = request->headers_in;
     evhtp_kv* hdr_kv = hdr_queue->tqh_first;
@@ -708,6 +712,17 @@ void http_server::process_request(evhtp_request *request)
 
     http_request_ownership ownership = ownership_none;
 
+    if (request->method == htp_method_OPTIONS)
+    {
+        evhtp_headers_add_header(reinterpret_cast<evhtp_request*>(request)->headers_out,
+                                 evhtp_header_new("Access-Control-Allow-Origin", "*", 0, 0));
+        evhtp_headers_add_header(reinterpret_cast<evhtp_request*>(request)->headers_out,
+                                 evhtp_header_new("Access-Control-Allow-Methods", "POST, GET, OPTIONS, DELETE", 0, 0));
+        evhtp_headers_add_header(reinterpret_cast<evhtp_request*>(request)->headers_out,
+                                 evhtp_header_new("Access-Control-Max-Age", "86400", 0, 0));
+        evhtp_send_reply(request, 204);
+    }
+    else
     if (request->method == htp_method_GET)
     {
         if (mHandler)
@@ -886,6 +901,11 @@ void http_server::set_handler(const request_expired_handler& handler)
     mExpiredHandler = handler;
 }
 
+void http_server::set_handler(const logging_handler &handler)
+{
+    mLoggingHandler = handler;
+}
+
 void http_server::set_content_type(ctx ctx, content_type ct)
 {
     if (!ctx)
@@ -895,8 +915,11 @@ void http_server::set_content_type(ctx ctx, content_type ct)
     const char* ct_text = nullptr;
     switch (ct)
     {
-    case content_type_html:         ct_text = "text/html"; break;
-    case content_type_json:         ct_text = "application/json"; break;
+    case content_type_html:         ct_text = "text/html";                  break;
+    case content_type_json:         ct_text = "application/json";           break;
+    case content_type_js:           ct_text = "text/javascript";            break;
+    case content_type_png:          ct_text = "image/png";                  break;
+    case content_type_binary:       ct_text = "application/octet-stream";   break;
     }
 
     // Look for already set Content-Type header
@@ -928,12 +951,32 @@ void http_server::set_content_type(ctx ctx, const std::string& ct)
         evhtp_kvs_add_kv(request->headers_out, evhtp_kv_new("Content-Type", ct.c_str(), 0, 1));
 }
 
+void http_server::set_cors(ctx ctx)
+{
+    if (!ctx)
+        return;
+
+    evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
+
+    // Look for already set Content-Type header
+    evhtp_kv_t* ct_header = evhtp_kvs_find_kv(request->headers_out, "Access-Control-Allow-Origin");
+    if (ct_header)
+    {
+        ct_header->val = "*";
+        ct_header->v_heaped = 0;
+    }
+    else
+        evhtp_kvs_add_kv(request->headers_out, evhtp_kv_new("Access-Control-Allow-Origin", "*", 0, 0));
+}
+
 void http_server::send_json(void* ctx, const std::string& body)
 {
     if (!ctx)
         return;
 
     set_content_type(ctx, content_type_json);
+    set_cors(ctx);
+
     send_chunk_reply(ctx, EVHTP_RES_200);
     send_chunk_data(ctx, body.c_str(), body.size());
     send_chunk_finish(ctx);
@@ -954,6 +997,48 @@ void http_server::send_html(void* ctx, const std::string& body)
     set_content_type(ctx, content_type_html);
     send_chunk_reply(ctx, EVHTP_RES_200);
     send_chunk_data(ctx, body.c_str(), body.size());
+    send_chunk_finish(ctx);
+}
+
+
+static bool ends_with(const std::string& v, const std::string& suffix)
+{
+    return v.find(suffix) == v.size() - suffix.length();
+}
+
+
+static http_server::content_type filename_to_ct(const std::string& path)
+{
+    if (ends_with(path, ".html") || ends_with(path, ".htm"))
+        return http_server::content_type_html;
+    if (ends_with(path, ".js"))
+        return http_server::content_type_js;
+    if (ends_with(path, ".json"))
+        return http_server::content_type_json;
+    if (ends_with(path, ".png"))
+        return http_server::content_type_png;
+
+    return http_server::content_type_binary;
+}
+
+void http_server::send_file(ctx ctx, const std::string& path)
+{
+    // Read file content and send
+    std::ifstream input_stream(path);
+    if (!input_stream.is_open())
+    {
+        send_error(ctx, 404, "File not found");
+        return;
+    }
+
+    // Read content
+    std::string content((std::istreambuf_iterator<char>(input_stream)),
+                         std::istreambuf_iterator<char>());
+
+    set_content_type(ctx, filename_to_ct(path));
+    set_cors(ctx);
+    send_chunk_reply(ctx, EVHTP_RES_200);
+    send_chunk_data(ctx, content.c_str(), content.size());
     send_chunk_finish(ctx);
 }
 

@@ -22,8 +22,23 @@ class MultipartHeaders;
 
 enum http_method
 {
-    Method_GET,
-    Method_POST
+    Method_GET = 0,
+    Method_HEAD,
+    Method_POST,
+    Method_PUT,
+    Method_DELETE,
+    Method_MKCOL,
+    Method_COPY,
+    Method_MOVE,
+    Method_OPTIONS,
+    Method_PROPFIND,
+    Method_PROPPATCH,
+    Method_LOCK,
+    Method_UNLOCK,
+    Method_TRACE,
+    Method_CONNECT, /* RFC 2616 */
+    Method_PATCH,   /* RFC 5789 */
+    Method_UNKNOWN,
 };
 
 // Request parameters & info
@@ -142,6 +157,9 @@ public:
         ownership_none
     };
 
+    // Call to receive logging
+    typedef std::function<void(http_server& server, const std::string& message)> logging_handler;
+
     // Callback to receive requests
     typedef std::function<void(http_server& server, ctx ctx, const request_info& ri, http_request_ownership& ownership)> request_get_handler;
 
@@ -150,21 +168,27 @@ public:
 
     void set_handler(const request_get_handler& handler);
     void set_handler(const request_expired_handler& handler);
+    void set_handler(const logging_handler& handler);
 
     enum content_type
     {
         content_type_html,
-        content_type_json
+        content_type_json,
+        content_type_js,
+        content_type_png,
+        content_type_binary
     };
 
     void set_content_type(ctx ctx, content_type ct);
     void set_content_type(ctx ctx, const std::string& ct);
+    void set_cors(ctx ctx);
 
     // All send_ZZZ methods can be used only from internal threads like listener or accept threads.
     // The sending content from another threads (for example from own thread pool) should be done via queue_ZZZ methods.
     // One-liners to send JSON/HTML and close connection (most probably)
     void send_json(ctx ctx, const std::string& body);
     void send_html(ctx ctx, const std::string& body);
+    void send_file(ctx ctx, const std::string& path);
     void send_error(ctx ctx, int code, const std::string& reason = "");
 
     void send_redirect(ctx ctx, const std::string& uri);
@@ -195,6 +219,7 @@ private:
     std::shared_ptr<std::thread> mWorkerThread;
     request_get_handler mHandler;
     request_expired_handler mExpiredHandler;
+    logging_handler mLoggingHandler;
 
     std::atomic_bool mTerminated;
     evhtp* mHttpContext = nullptr;
