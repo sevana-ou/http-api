@@ -45,7 +45,7 @@ int request_params::get_int(const std::string& name, int default_value) const
     return default_value;
 }
 
-std::set<int> request_params::get_int_set(const std::string& name) const
+std::set<int> request_params::get_int_set(const std::string& name, const std::set<int>& default_value) const
 {
     std::set<int> result;
     try
@@ -62,6 +62,9 @@ std::set<int> request_params::get_int_set(const std::string& name) const
     catch(...)
     {}
 
+    if (result.empty())
+        return default_value;
+
     return result;
 }
 
@@ -74,7 +77,7 @@ std::string request_params::get_string(const std::string& name, const std::strin
         return default_value;
 }
 
-std::set<std::string> request_params::get_string_set(const std::string& name) const
+std::set<std::string> request_params::get_string_set(const std::string& name, const std::set<std::string>& default_value) const
 {
     std::set<std::string> result;
     try
@@ -89,6 +92,9 @@ std::set<std::string> request_params::get_string_set(const std::string& name) co
     }
     catch(...)
     {}
+
+    if (result.empty())
+        return default_value;
 
     return result;
 }
@@ -369,6 +375,7 @@ http_client::ctx http_client::get(const std::string& url, connection_kind kind, 
     }
 
     const char* path = evhttp_uri_get_path(u);
+    const char* query = evhttp_uri_get_query(u);
 
     evhttp_request* r = evhttp_request_new(&process_eof_callback, this);
     r->chunk_cb = &process_data_callback;
@@ -382,7 +389,8 @@ http_client::ctx http_client::get(const std::string& url, connection_kind kind, 
     mRequests[r] = std::pair<response_handler, response_info>(handler, response_info());
 
     // Run request
-    int code = evhttp_make_request(c, r, EVHTTP_REQ_GET, path ? path : "/");
+    std::string fp = std::string(path ? path : "/") + (query ? std::string("?") + query : std::string());
+    int code = evhttp_make_request(c, r, EVHTTP_REQ_GET, fp.c_str());
     evhttp_uri_free(u); u = nullptr;
 
     if (code)
@@ -404,6 +412,7 @@ void http_client::worker()
     while (!mTerminated)
     {
         event_base_dispatch(mIoContext);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
 
@@ -599,6 +608,10 @@ bool http_server::get_urlencoded_formdata_parser_enabled() const
     return mUrlencodedFormDataParserEnabled;
 }
 
+event_base* http_server::get_io_base() const
+{
+    return mIoContext;
+}
 
 static void evhtp_thread_init(evhtp_t * htp, evthr_t * thr, void * arg)
 {
@@ -1217,7 +1230,7 @@ static void timer_callback(evutil_socket_t, short, void* arg)
     {}
 }
 
-timer::timer(event_base* base, std::chrono::milliseconds interval, int flag, callback callback)
+timer::timer(event_base* base, std::chrono::milliseconds interval, option flag, callback callback)
     :mCallback(callback)
 {
     if (flag == flag_interval_with_immediate)
@@ -1229,7 +1242,9 @@ timer::timer(event_base* base, std::chrono::milliseconds interval, int flag, cal
     tv.tv_sec = interval.count() / 1000;
     tv.tv_usec = (interval.count() % 1000) * 1000;
 
-    event_add(mTimerEvent, &tv);
+    int retcode = event_add(mTimerEvent, &tv);
+    if (retcode == -1)
+        std::cerr << "Bad retcode when event_add(): " << std::endl;
 }
 
 timer::~timer()

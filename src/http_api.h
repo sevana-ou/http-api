@@ -47,9 +47,9 @@ class request_params: public std::multimap<std::string, std::string>
 public:
     bool            get_bool(const std::string& name, bool default_value = false) const;
     int             get_int(const std::string& name, int default_value = 0) const;
-    std::set<int>   get_int_set(const std::string& name) const;
+    std::set<int>   get_int_set(const std::string& name, const std::set<int>& default_value = std::set<int>()) const;
     std::string     get_string(const std::string& name, const std::string& default_value = std::string()) const;
-    std::set<std::string> get_string_set(const std::string& name) const;
+    std::set<std::string> get_string_set(const std::string& name, const std::set<std::string>& default_value = std::set<std::string>()) const;
 };
 
 typedef std::multimap<std::string, std::string> request_headers;
@@ -143,6 +143,8 @@ public:
 
     void start();
     void stop();
+
+    event_base* get_io_base() const;
 
     // Request context
     typedef void* ctx;
@@ -252,14 +254,14 @@ class timer
 {
 public:
     typedef std::function<void()> callback;
-    enum
+    enum option
     {
         flag_singleshot,
         flag_interval,
         flag_interval_with_immediate
     };
 
-    timer(event_base* base, std::chrono::milliseconds interval, int flag, callback callback);
+    timer(event_base* base, std::chrono::milliseconds interval, option flag, callback callback);
     ~timer();
     callback get_callback();
 
