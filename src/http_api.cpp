@@ -559,7 +559,7 @@ void http_server::on_process_response_queue(evutil_socket_t, short, void *ctx)
         server->process_response_queue();
 }
 
-static void on_http_error(evhtp_request_t* req, evhtp_error_flags errtype, void* arg)
+static void on_http_error(evhtp_request_t* /*req*/, evhtp_error_flags /*errtype*/, void* /*arg*/)
 {
 
 }
@@ -975,7 +975,7 @@ void http_server::set_cors(ctx ctx)
     evhtp_kv_t* ct_header = evhtp_kvs_find_kv(request->headers_out, "Access-Control-Allow-Origin");
     if (ct_header)
     {
-        ct_header->val = "*";
+        ct_header->val = const_cast<char*>("*");
         ct_header->v_heaped = 0;
     }
     else
