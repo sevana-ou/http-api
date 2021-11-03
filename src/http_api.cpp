@@ -802,6 +802,18 @@ void http_server::process_request(evhtp_request *request)
             else
             if (content_type.find("urlencoded") != std::string::npos)
             {
+                // Maybe there is parameters in request line ?
+                evhtp_kvs* param_queue = request->uri->query;
+                if (param_queue)
+                {
+                    evhtp_kv* param = param_queue->tqh_first;
+                    while (param)
+                    {
+                        parser.mInfo.mParams.insert(std::pair<std::string, std::string>(std::string(param->key ? param->key : ""), std::string(param->val ? param->val : "")));
+                        param = reinterpret_cast<evhtp_kv*>(param->next.tqe_next);
+                    }
+                }
+
                 if (mUrlencodedFormDataParserEnabled)
                 {
                     parse_urlencoded_data(parser.mInfo.mParams, body, body_size);
