@@ -598,16 +598,6 @@ size_t http_server::get_threads() const
     return mNumberOfThreads;
 }
 
-void http_server::set_urlencoded_formdata_parser_enabled(bool parse_formdata)
-{
-    mUrlencodedFormDataParserEnabled = parse_formdata;
-}
-
-bool http_server::get_urlencoded_formdata_parser_enabled() const
-{
-    return mUrlencodedFormDataParserEnabled;
-}
-
 event_base* http_server::get_io_base() const
 {
     return mIoContext;
@@ -814,16 +804,24 @@ void http_server::process_request(evhtp_request *request)
                     }
                 }
 
-                if (mUrlencodedFormDataParserEnabled)
+                // Special case to handle uploaded .pcap / .pcapng - used in some of our projects. This violates HTTP protocol rules - but this code already in production.
+                if (body_size > 4)
                 {
-                    parse_urlencoded_data(parser.mInfo.mParams, body, body_size);
+                    uint32_t signature = *reinterpret_cast<uint32_t*>(body);
+                    bool normal_resolution = signature == 0xa1b2c3d4 || signature == 0xd4c3b2a1;
+                    bool ns_resolution = signature == 0xa1b23c4d || signature == 0x4d3cb2a1;
+                    bool ng_flag = signature == 0x0A0D0D0A;
+
+                    if (normal_resolution || ns_resolution || ng_flag)
+                    {
+                        parser.mInfo.mParams.insert(std::make_pair("content", std::string(body, body_size)));
+                        parser.mInfo.mParams.insert(std::make_pair("filename", "1.pcap"));
+                    }
+                    else
+                        parse_urlencoded_data(parser.mInfo.mParams, body, body_size);
                 }
                 else
-                {
-                    // Skip 4 bytes
-                    parser.mInfo.mParams.insert(std::make_pair("content", std::string(body, body_size)));
-                    parser.mInfo.mParams.insert(std::make_pair("filename", "1.pcap"));
-                }
+                    parse_urlencoded_data(parser.mInfo.mParams, body, body_size);
             }
             else
             {

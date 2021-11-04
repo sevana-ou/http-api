@@ -137,10 +137,6 @@ public:
     void set_threads(size_t nr);
     size_t get_threads() const;
 
-    // Treat urlencoded form data as single
-    void set_urlencoded_formdata_parser_enabled(bool parse_formdata);
-    bool get_urlencoded_formdata_parser_enabled() const;
-
     void start();
     void stop();
 
@@ -216,7 +212,6 @@ public:
 private:
     uint16_t mPort = 8080;
     event_base* mIoContext = nullptr;
-    bool mUrlencodedFormDataParserEnabled = true;
 
     std::shared_ptr<std::thread> mWorkerThread;
     request_get_handler mHandler;
