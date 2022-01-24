@@ -209,6 +209,7 @@ public:
     void queue_html(ctx ctx, const std::string& body);
     void queue_error(ctx ctx, int code, const std::string& reason = "");
 
+    bool is_failed() const;
 private:
     uint16_t mPort = 8080;
     event_base* mIoContext = nullptr;
@@ -231,6 +232,7 @@ private:
     std::mutex mResponseQueueMutex;
     std::vector<queued_response> mResponseQueue;
     event* mResponseQueueEvent = nullptr;
+    std::atomic_bool mEventLoopFailed;
 
     void worker();
     static void on_http_request(evhtp_request_t* req, void* arg);

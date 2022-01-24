@@ -456,7 +456,7 @@ void http_client::process_request_data(evhttp_request* request)
         v.second.mAllData += v.second.mChunk;
         try
         {
-            v.first(*this, request, v.second);
+            // v.first(*this, request, v.second);
         }
         catch(...)
         {}
@@ -567,6 +567,7 @@ static void on_http_error(evhtp_request_t* /*req*/, evhtp_error_flags /*errtype*
 http_server::http_server()
 {
     signal(SIGPIPE, broken_pipe);
+    mEventLoopFailed = false;
 
 #if defined(TARGET_LINUX) || defined(TARGET_OSX)
     evthread_use_pthreads();
@@ -612,6 +613,7 @@ static void evhtp_thread_init(evhtp_t * htp, evthr_t * thr, void * arg)
 
 void http_server::start()
 {
+    mEventLoopFailed = false;
     mRequestCounter = 0;
     mIoContext = event_base_new();
     mResponseQueueEvent = event_new(mIoContext, -1, 0, &http_server::on_process_response_queue, this);
@@ -652,25 +654,36 @@ void http_server::stop()
     if (!mIoContext)
         return;
 
-    if (mHttpContext)
+    try
     {
-        evhtp_unbind_socket(mHttpContext);
-        evhtp_free(mHttpContext);
-        mHttpContext = nullptr;
+        if (mHttpContext)
+        {
+            evhtp_unbind_socket(mHttpContext);
+            evhtp_free(mHttpContext);
+            mHttpContext = nullptr;
+        }
+
+        mTerminated = true;
+        event_base_loopbreak(mIoContext);
+
+        if (mWorkerThread)
+        {
+            if (mWorkerThread->joinable())
+                mWorkerThread->join();
+            mWorkerThread.reset();
+        }
+
+        event_free(mResponseQueueEvent); mResponseQueueEvent = nullptr;
+        event_base_free(mIoContext); mIoContext = nullptr;
     }
-
-    mTerminated = true;
-    event_base_loopbreak(mIoContext);
-
-    if (mWorkerThread)
+    catch(std::exception& e)
     {
-        if (mWorkerThread->joinable())
-            mWorkerThread->join();
-        mWorkerThread.reset();
+        std::cerr << "Problem when stopping license server: " << e.what() << std::endl;
     }
-
-    event_free(mResponseQueueEvent); mResponseQueueEvent = nullptr;
-    event_base_free(mIoContext); mIoContext = nullptr;
+    catch(...)
+    {
+        std::cerr << "Unexpected problem when stopping license server. " << std::endl;
+    }
 }
 
 void http_server::worker()
@@ -685,10 +698,18 @@ void http_server::worker()
         {
             event_base_dispatch(mIoContext);
         }
-        catch (...)
+        catch (std::exception& e)
+        {
+            // Signal to restart http_server
+            std::cerr << "Strange libevent error: " << e.what() << std::endl;
+            mEventLoopFailed = true;
+        }
+        catch(...)
         {
             std::cerr << "Strange libevent error" << std::endl;
+            mEventLoopFailed = true;
         }
+
         //std::cout << "event_base_loop exit." << std::endl;
     }
 }
@@ -1224,6 +1245,11 @@ void http_server::queue_error(ctx ctx, int code, const std::string& reason)
     };
     QUEUE_ITEM(qr);
 
+}
+
+bool http_server::is_failed() const
+{
+    return mEventLoopFailed;
 }
 
 #endif
