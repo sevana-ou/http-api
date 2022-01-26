@@ -559,10 +559,12 @@ void http_server::on_process_response_queue(evutil_socket_t, short, void *ctx)
         server->process_response_queue();
 }
 
-static void on_http_error(evhtp_request_t* /*req*/, evhtp_error_flags /*errtype*/, void* /*arg*/)
+/*
+static void on_http_error(evhtp_request_t* req, evhtp_error_flags errtype, void* arg)
 {
 
 }
+*/
 
 http_server::http_server()
 {
