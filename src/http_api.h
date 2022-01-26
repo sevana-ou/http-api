@@ -147,7 +147,13 @@ public:
 
     // Parsed information about requests
     std::recursive_mutex mRequestContextsMutex;
-    std::map<ctx, std::shared_ptr<request_multipart_parser>> mRequestContexts;
+    struct request_context
+    {
+        request_multipart_parser mParser;
+        std::function<void()> mContinueLambda = {};
+    };
+
+    std::map<ctx, std::shared_ptr<request_context>> mRequestContexts;
 
     enum http_request_ownership
     {
@@ -197,7 +203,7 @@ public:
 
     // No headers is sent in this method. Please use send_headers before
     void send_chunk_reply(ctx ctx, int code);
-    void send_chunk_data(ctx ctx, const void* data, size_t len);
+    void send_chunk_data(ctx ctx, const void* data, size_t len, std::function<void()> callback = {});
     void send_chunk_finish(ctx ctx);
 
     void set_keepalive(ctx ctx, bool keepalive);
@@ -243,7 +249,7 @@ private:
     void process_request_finalization(evhtp_request_t* request);
     void process_response_queue();
 
-    request_multipart_parser& find_request_parser(ctx request);
+    request_context& find_request_context(ctx request);
 };
 #endif
 

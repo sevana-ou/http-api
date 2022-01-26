@@ -2,11 +2,11 @@
 
 #include <event2/event.h>
 #include <event2/http.h>
-#include <event2/http.h>
 #include <event2/buffer.h>
 #include <event2/http_struct.h>
 #include <event2/keyvalq_struct.h>
 #include <event2/thread.h>
+#include "evhtp.h"
 
 #include <signal.h>
 #include <string.h>
@@ -606,7 +606,7 @@ event_base* http_server::get_io_base() const
     return mIoContext;
 }
 
-static void evhtp_thread_init(evhtp_t * htp, evthr_t * thr, void * arg)
+static void evhtp_thread_init(evhtp_t * /*htp*/, evthr_t * /*thr*/, void * /*arg*/)
 {
 #if defined(TARGET_LINUX)
     pthread_setname_np(pthread_self(), "evhtp");
@@ -618,7 +618,7 @@ void http_server::start()
     mEventLoopFailed = false;
     mRequestCounter = 0;
     mIoContext = event_base_new();
-    mResponseQueueEvent = event_new(mIoContext, -1, 0, &http_server::on_process_response_queue, this);
+    mResponseQueueEvent = event_new(mIoContext, -1, EV_WRITE, &http_server::on_process_response_queue, this);
     mHttpContext = evhtp_new(mIoContext, this);
 
     // Just to be safe
@@ -716,23 +716,33 @@ void http_server::worker()
     }
 }
 
+static evhtp_res http__send_chunk(evhtp_connection_t * /*conn*/, void * /*arg*/)
+{
+    // We can ask callback for next data - cast from arg.
+    return EVHTP_RES_OK;
+}
+
 void http_server::process_request(evhtp_request *request)
 {
+    int retcode = evhtp_connection_set_hook(request->conn,
+            evhtp_hook_on_write,
+            (evhtp_hook)http__send_chunk, nullptr);
+
     mRequestCounter++;
 
     // Find context structure
-    request_multipart_parser& parser = find_request_parser(request);
-    parser.mInfo.mPath = request->uri->path->full ? request->uri->path->full : std::string();
+    request_context& context = find_request_context(request);
+    context.mParser.mInfo.mPath = request->uri->path->full ? request->uri->path->full : std::string();
 
     if (mLoggingHandler)
-        mLoggingHandler(*this, "Incoming request to: " + parser.mInfo.mPath);
+        mLoggingHandler(*this, "Incoming request to: " + context.mParser.mInfo.mPath);
 
     // Find headers
     evhtp_kvs* hdr_queue = request->headers_in;
     evhtp_kv* hdr_kv = hdr_queue->tqh_first;
     while (hdr_kv)
     {
-        parser.mInfo.mHeaders.insert(std::make_pair(hdr_kv->key, hdr_kv->val ? std::string(hdr_kv->val) : std::string()));
+        context.mParser.mInfo.mHeaders.insert(std::make_pair(hdr_kv->key, hdr_kv->val ? std::string(hdr_kv->val) : std::string()));
         hdr_kv = hdr_kv->next.tqe_next;
     }
 
@@ -767,9 +777,9 @@ void http_server::process_request(evhtp_request *request)
             }
 
             // Call handler
-            parser.mInfo.mParams = params;
-            parser.mInfo.mMethod = Method_GET;
-            mHandler(*this, request, parser.mInfo, ownership);
+            context.mParser.mInfo.mParams = params;
+            context.mParser.mInfo.mMethod = Method_GET;
+            mHandler(*this, request, context.mParser.mInfo, ownership);
         }
         else
         {
@@ -783,10 +793,10 @@ void http_server::process_request(evhtp_request *request)
         if (mHandler)
         {
             std::string boundary, content_type;
-            if (parser.mInfo.mHeaders.count("Content-Type"))
+            if (context.mParser.mInfo.mHeaders.count("Content-Type"))
             {
-                auto iter = parser.mInfo.mHeaders.find("Content-Type");
-                if (iter != parser.mInfo.mHeaders.end())
+                auto iter = context.mParser.mInfo.mHeaders.find("Content-Type");
+                if (iter != context.mParser.mInfo.mHeaders.end())
                 {
                     content_type = iter->second;
                     if (content_type.find("multipart/form-data") != std::string::npos)
@@ -805,9 +815,9 @@ void http_server::process_request(evhtp_request *request)
 
             if (boundary.size())
             {
-                parser.mMultipartReader->setBoundary(boundary);
-                parser.mMultipartReader->feed(body, body_size);
-                if (parser.mMultipartReader->succeeded())
+                context.mParser.mMultipartReader->setBoundary(boundary);
+                context.mParser.mMultipartReader->feed(body, body_size);
+                if (context.mParser.mMultipartReader->succeeded())
                 {
                     // Do nothing here
                 }
@@ -822,7 +832,7 @@ void http_server::process_request(evhtp_request *request)
                     evhtp_kv* param = param_queue->tqh_first;
                     while (param)
                     {
-                        parser.mInfo.mParams.insert(std::pair<std::string, std::string>(std::string(param->key ? param->key : ""), std::string(param->val ? param->val : "")));
+                        context.mParser.mInfo.mParams.insert(std::pair<std::string, std::string>(std::string(param->key ? param->key : ""), std::string(param->val ? param->val : "")));
                         param = reinterpret_cast<evhtp_kv*>(param->next.tqe_next);
                     }
                 }
@@ -837,14 +847,14 @@ void http_server::process_request(evhtp_request *request)
 
                     if (normal_resolution || ns_resolution || ng_flag)
                     {
-                        parser.mInfo.mParams.insert(std::make_pair("content", std::string(body, body_size)));
-                        parser.mInfo.mParams.insert(std::make_pair("filename", "1.pcap"));
+                        context.mParser.mInfo.mParams.insert(std::make_pair("content", std::string(body, body_size)));
+                        context.mParser.mInfo.mParams.insert(std::make_pair("filename", "1.pcap"));
                     }
                     else
-                        parse_urlencoded_data(parser.mInfo.mParams, body, body_size);
+                        parse_urlencoded_data(context.mParser.mInfo.mParams, body, body_size);
                 }
                 else
-                    parse_urlencoded_data(parser.mInfo.mParams, body, body_size);
+                    parse_urlencoded_data(context.mParser.mInfo.mParams, body, body_size);
             }
             else
             {
@@ -852,10 +862,10 @@ void http_server::process_request(evhtp_request *request)
             }
             delete[] body; body = nullptr;
 
-            parser.mInfo.mMethod = Method_POST;
+            context.mParser.mInfo.mMethod = Method_POST;
             try
             {
-                mHandler(*this, request, parser.mInfo, ownership);
+                mHandler(*this, request, context.mParser.mInfo, ownership);
             }
             catch(...)
             {}
@@ -878,7 +888,6 @@ void http_server::process_request(evhtp_request *request)
         if (iter != mRequestContexts.end())
             mRequestContexts.erase(iter);
     }
-    // std::cout << "Request :" << mRequestCounter << std::endl;
 }
 
 void http_server::process_request_finalization(evhtp_request_t *request)
@@ -914,21 +923,20 @@ void http_server::process_response_queue()
     {}
 }
 
-request_multipart_parser& http_server::find_request_parser(ctx request)
+http_server::request_context& http_server::find_request_context(ctx request)
 {
     std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
-    std::shared_ptr<request_multipart_parser> result;
 
     auto iter = mRequestContexts.find(request);
     if (iter == mRequestContexts.end())
     {
-        result = std::make_shared<request_multipart_parser>();
-        result->mMultipartReader = std::make_shared<MultipartReader>();
+        auto result = std::make_shared<request_context>();
+        result->mParser.mMultipartReader = std::make_shared<MultipartReader>();
 
-        result->mMultipartReader->onPartBegin = &MimePartBeginCallback;
-        result->mMultipartReader->onPartEnd = &MimePartEndCallback;
-        result->mMultipartReader->onPartData = &MimePartDataCallback;
-        result->mMultipartReader->userData = result.get();
+        result->mParser.mMultipartReader->onPartBegin = &MimePartBeginCallback;
+        result->mParser.mMultipartReader->onPartEnd = &MimePartEndCallback;
+        result->mParser.mMultipartReader->onPartData = &MimePartDataCallback;
+        result->mParser.mMultipartReader->userData = result.get();
 
         mRequestContexts.insert(std::make_pair(request, result));
         return *result;
@@ -1100,7 +1108,7 @@ void http_server::send_error(void *ctx, int code, const std::string &/*reason*/)
     evhtp_send_reply(reinterpret_cast<evhtp_request*>(ctx), static_cast<evhtp_res>(code));
 }
 
-void http_server::send_redirect(ctx ctx, const std::string& uri)
+void http_server::send_redirect(ctx /*ctx*/, const std::string& /*uri*/)
 {
     // ToDo
 }
@@ -1133,7 +1141,7 @@ void http_server::send_chunk_reply(ctx ctx, int code)
     evhtp_send_reply_chunk_start(request, static_cast<evhtp_res>(code));
 }
 
-void http_server::send_chunk_data(ctx ctx, const void* data, size_t len)
+void http_server::send_chunk_data(ctx ctx, const void* data, size_t len, std::function<void()> callback)
 {
     evhtp_request* req = reinterpret_cast<evhtp_request*>(ctx);
     if (!req || !data || !len)
@@ -1145,6 +1153,7 @@ void http_server::send_chunk_data(ctx ctx, const void* data, size_t len)
         if (mRequestContexts.find(req) == mRequestContexts.end())
             return;
     }
+
 
     evbuffer* buf = evbuffer_new();
     evbuffer_add(buf, data, len);
