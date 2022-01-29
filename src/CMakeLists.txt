@@ -29,7 +29,7 @@ target_include_directories(http_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_C
 
 if (TARGET_LINUX)
     target_compile_definitions(http_lib PRIVATE -DTARGET_LINUX)
-    set (EVHTP_LIB ${CMAKE_CURRENT_SOURCE_DIR}/../lib/evhtp/lib/linux/x64/libevhtp.a PARENT_SCOPE)
+    set (EVHTP_LIB ${CMAKE_CURRENT_SOURCE_DIR}/../lib/evhtp/lib/linux/x64/glibc/libevhtp.a PARENT_SCOPE)
 endif()
 
 if (TARGET_OSX)
