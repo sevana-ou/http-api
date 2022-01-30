@@ -1001,6 +1001,7 @@ void http_server::process_conn_finish(evhtp_connection_t *conn)
 
     mConnectionMap.erase(iter);
 }
+
 http_server::request_context& http_server::find_request_context(ctx request)
 {
     std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
@@ -1228,11 +1229,15 @@ void http_server::send_chunk_data(ctx ctx, const void* data, size_t len, std::fu
     // Check if request is alive yet
     {
         std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
-        if (mRequestContexts.find(req) == mRequestContexts.end())
+        auto request_iter = mRequestContexts.find(ctx);
+        if (request_iter == mRequestContexts.end())
             return;
+
+        // Update callback
+        request_iter->second->mContinueLambda = callback;
     }
 
-
+    // Send data
     evbuffer* buf = evbuffer_new();
     evbuffer_add(buf, data, len);
     evhtp_send_reply_chunk(req, buf);
