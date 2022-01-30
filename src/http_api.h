@@ -147,6 +147,7 @@ public:
 
     // Parsed information about requests
     std::recursive_mutex mRequestContextsMutex;
+
     struct request_context
     {
         request_multipart_parser mParser;
@@ -237,6 +238,10 @@ private:
     };
     std::mutex mResponseQueueMutex;
     std::vector<queued_response> mResponseQueue;
+
+    std::mutex mConnectionMapMutex;
+    std::map<void*,void*> mConnectionMap;
+
     event* mResponseQueueEvent = nullptr;
     std::atomic_bool mEventLoopFailed;
 
@@ -244,10 +249,14 @@ private:
     static void on_http_request(evhtp_request_t* req, void* arg);
     static evhtp_res on_http_request_finalization(evhtp_request_t* req, void* arg);
     static void on_process_response_queue(evutil_socket_t, short, void *);
+    static evhtp_res on_write_ready(evhtp_connection_t* conn, void* arg);
+    static evhtp_res on_conn_finish(evhtp_connection_t* conn, void* arg);
 
     void process_request(evhtp_request_t* request);
     void process_request_finalization(evhtp_request_t* request);
     void process_response_queue();
+    void process_write_ready(evhtp_connection_t* conn);
+    void process_conn_finish(evhtp_connection_t* conn);
 
     request_context& find_request_context(ctx request);
 };

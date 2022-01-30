@@ -559,6 +559,38 @@ void http_server::on_process_response_queue(evutil_socket_t, short, void *ctx)
         server->process_response_queue();
 }
 
+evhtp_res http_server::on_write_ready(evhtp_connection_t * conn, void * arg)
+{
+    if (!arg)
+        return EVHTP_RES_OK;
+
+    http_server* server = reinterpret_cast<http_server*>(arg);
+    try
+    {
+        server->process_write_ready(conn);
+    }
+    catch(...)
+    {}
+
+    return EVHTP_RES_OK;
+}
+
+evhtp_res http_server::on_conn_finish(evhtp_connection_t* conn, void* arg)
+{
+    if (!arg)
+        return EVHTP_RES_OK;
+
+    http_server* server = reinterpret_cast<http_server*>(arg);
+    try
+    {
+        server->process_conn_finish(conn);
+    }
+    catch(...)
+    {}
+
+    return EVHTP_RES_OK;
+}
+
 /*
 static void on_http_error(evhtp_request_t* req, evhtp_error_flags errtype, void* arg)
 {
@@ -716,17 +748,50 @@ void http_server::worker()
     }
 }
 
-static evhtp_res http__send_chunk(evhtp_connection_t * /*conn*/, void * /*arg*/)
+void http_server::process_write_ready(evhtp_connection_t* conn)
 {
-    // We can ask callback for next data - cast from arg.
-    return EVHTP_RES_OK;
+    std::map<void*,void*>::const_iterator conn_iter;
+    {
+        std::unique_lock<std::mutex> l(mConnectionMapMutex);
+        conn_iter = mConnectionMap.find(conn);
+        if (conn_iter == mConnectionMap.end())
+            return;
+    }
+
+    // Find an request
+    std::unique_lock<std::recursive_mutex> lr(mRequestContextsMutex);
+    auto request_iter = mRequestContexts.find(conn_iter->second);
+
+    if (request_iter == mRequestContexts.end())
+        return;
+
+    auto& request_context = *request_iter->second;
+
+    // Notify about readyness to send next chunk
+    request_context.mContinueLambda();
 }
 
 void http_server::process_request(evhtp_request *request)
 {
-    int retcode = evhtp_connection_set_hook(request->conn,
-            evhtp_hook_on_write,
-            (evhtp_hook)http__send_chunk, nullptr);
+    // Set callback on connection to watch end of sending
+    {
+        std::unique_lock<std::mutex> l(mConnectionMapMutex);
+        auto conn_iter = mConnectionMap.find(request->conn);
+        if (conn_iter == mConnectionMap.end())
+        {
+            // Callback is not set now
+            mConnectionMap.insert(std::pair<void*, void*>(request->conn, request));
+            evhtp_connection_set_hook(request->conn,
+                    evhtp_hook_on_write,
+                    (evhtp_hook)http_server::on_write_ready, this);
+
+            evhtp_connection_set_hook(request->conn,
+                evhtp_hook_on_connection_fini,
+                (evhtp_hook)http_server::on_conn_finish, this);
+        }
+        else
+            conn_iter->second = request;
+    }
 
     mRequestCounter++;
 
@@ -923,6 +988,19 @@ void http_server::process_response_queue()
     {}
 }
 
+void http_server::process_conn_finish(evhtp_connection_t *conn)
+{
+    std::unique_lock<std::mutex> l(mConnectionMapMutex);
+    auto iter = mConnectionMap.find(conn);
+    if (iter == mConnectionMap.end())
+        return;
+
+    // Unset hooks
+    evhtp_connection_unset_hook(conn, evhtp_hook_on_write);
+    evhtp_connection_unset_hook(conn, evhtp_hook_on_connection_fini);
+
+    mConnectionMap.erase(iter);
+}
 http_server::request_context& http_server::find_request_context(ctx request)
 {
     std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
