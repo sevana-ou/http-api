@@ -730,7 +730,12 @@ void http_server::worker()
         // event_base_loop(mIoContext, 0);
         try
         {
-            event_base_dispatch(mIoContext);
+            int retcode = event_base_dispatch(mIoContext);
+            if ( retcode != 0)
+            {
+                std::cerr << "Event base dispatch failed, need to restart app. Error code: " << retcode << std::endl;
+                mEventLoopFailed = true;
+            }
         }
         catch (std::exception& e)
         {
