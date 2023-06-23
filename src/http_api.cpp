@@ -50,13 +50,13 @@ std::set<int> request_params::get_int_set(const std::string& name, const std::se
     std::set<int> result;
     try
     {
-        auto iter = find(name);
-        while (iter != end())
+        for (auto iter = find(name); iter != end(); iter++)
         {
+            if (iter->first != name)
+                break;
+
             int v = std::stoi(iter->second);
-            if (!result.count(v))
-                result.insert(v);
-            iter++;
+            result.insert(v);
         }
     }
     catch(...)
@@ -773,7 +773,8 @@ void http_server::process_write_ready(evhtp_connection_t* conn)
     auto& request_context = *request_iter->second;
 
     // Notify about readyness to send next chunk
-    request_context.mContinueLambda();
+    if (request_context.mContinueLambda)
+        request_context.mContinueLambda();
 }
 
 void http_server::process_request(evhtp_request *request)
