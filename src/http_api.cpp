@@ -30,13 +30,13 @@ bool request_params::get_bool(const std::string& name, bool default_value) const
         return default_value;
 }
 
-int request_params::get_int(const std::string& name, int default_value) const
+int64_t request_params::get_int(const std::string& name, int64_t default_value) const
 {
     try
     {
         auto iter = find(name);
         if (iter != end())
-            return std::stoi(iter->second);
+            return std::stoll(iter->second);
         else
             return default_value;
     }
@@ -45,9 +45,9 @@ int request_params::get_int(const std::string& name, int default_value) const
     return default_value;
 }
 
-std::set<int> request_params::get_int_set(const std::string& name, const std::set<int>& default_value) const
+std::set<int64_t> request_params::get_int_set(const std::string& name, const std::set<int64_t>& default_value) const
 {
-    std::set<int> result;
+    std::set<int64_t> result;
     try
     {
         for (auto iter = find(name); iter != end(); iter++)
@@ -718,6 +718,11 @@ void http_server::stop()
     {
         std::cerr << "Unexpected problem when stopping license server. " << std::endl;
     }
+}
+
+bool http_server::is_active() const
+{
+    return mIoContext != nullptr;
 }
 
 void http_server::worker()

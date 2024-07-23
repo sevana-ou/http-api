@@ -45,10 +45,10 @@ enum http_method
 class request_params: public std::multimap<std::string, std::string>
 {
 public:
-    bool            get_bool(const std::string& name, bool default_value = false) const;
-    int             get_int(const std::string& name, int default_value = 0) const;
-    std::set<int>   get_int_set(const std::string& name, const std::set<int>& default_value = std::set<int>()) const;
-    std::string     get_string(const std::string& name, const std::string& default_value = std::string()) const;
+    bool                get_bool(const std::string& name, bool default_value = false) const;
+    int64_t             get_int(const std::string& name, int64_t default_value = 0) const;
+    std::set<int64_t>   get_int_set(const std::string& name, const std::set<int64_t>& default_value = std::set<int64_t>()) const;
+    std::string         get_string(const std::string& name, const std::string& default_value = std::string()) const;
     std::set<std::string> get_string_set(const std::string& name, const std::set<std::string>& default_value = std::set<std::string>()) const;
 };
 
@@ -139,6 +139,7 @@ public:
 
     void start();
     void stop();
+    bool is_active() const;
 
     event_base* get_io_base() const;
 
