@@ -1063,6 +1063,7 @@ void http_server::set_content_type(ctx ctx, content_type ct)
     case content_type_json:         ct_text = "application/json";           break;
     case content_type_js:           ct_text = "text/javascript";            break;
     case content_type_png:          ct_text = "image/png";                  break;
+    case content_type_css:          ct_text = "text/css";                   break;
     case content_type_binary:       ct_text = "application/octet-stream";   break;
     }
 
@@ -1161,6 +1162,8 @@ static http_server::content_type filename_to_ct(const std::string& path)
         return http_server::content_type_json;
     if (ends_with(path, ".png"))
         return http_server::content_type_png;
+    if (ends_with(path, ".css"))
+        return http_server::content_type_css;
 
     return http_server::content_type_binary;
 }

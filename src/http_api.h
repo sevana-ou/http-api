@@ -182,6 +182,7 @@ public:
         content_type_json,
         content_type_js,
         content_type_png,
+        content_type_css,
         content_type_binary
     };
 
