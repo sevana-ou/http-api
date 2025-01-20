@@ -1164,6 +1164,8 @@ static http_server::content_type filename_to_ct(const std::string& path)
         return http_server::content_type_png;
     if (ends_with(path, ".css"))
         return http_server::content_type_css;
+    if (ends_with(path, ".map"))
+        return http_server::content_type_json;
 
     return http_server::content_type_binary;
 }
