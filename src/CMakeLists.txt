@@ -15,8 +15,8 @@ if (CMAKE_SYSTEM MATCHES "Windows*")
 endif()
 
 
-set (CMAKE_CXX_STANDARD 23)
-set (CMAKE_CXX_STANDARD_REQUIRED 23)
+set (CMAKE_CXX_STANDARD 20)
+set (CMAKE_CXX_STANDARD_REQUIRED 20)
 set (SRC http_api.cpp)
 set (HDR http_api.h multipart_reader.h multipart_parser.h)
 add_library(http_lib STATIC ${SRC} ${HDR})
