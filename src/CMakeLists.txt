@@ -1,6 +1,6 @@
 project(http-lib)
 
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.20)
 
 if (CMAKE_SYSTEM MATCHES "Linux*")
     set (TARGET_LINUX ON)
@@ -15,8 +15,8 @@ if (CMAKE_SYSTEM MATCHES "Windows*")
 endif()
 
 
-set (CMAKE_CXX_STANDARD 11)
-set (CMAKE_CXX_STANDARD_REQUIRED 11)
+set (CMAKE_CXX_STANDARD 23)
+set (CMAKE_CXX_STANDARD_REQUIRED 23)
 set (SRC http_api.cpp)
 set (HDR http_api.h multipart_reader.h multipart_parser.h)
 add_library(http_lib STATIC ${SRC} ${HDR})
