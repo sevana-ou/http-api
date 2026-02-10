@@ -55,7 +55,7 @@ std::set<int64_t> request_params::get_int_set(const std::string& name, const std
             if (iter->first != name)
                 break;
 
-            int v = std::stoi(iter->second);
+            int v = std::stoll(iter->second);
             result.insert(v);
         }
     }
@@ -115,17 +115,17 @@ void handle_part_end();
 
 void MimePartBeginCallback(const MultipartHeaders& headers, void *userData)
 {
-    reinterpret_cast<request_multipart_parser*>(userData)->handle_part_begin(headers);
+    reinterpret_cast<http_server::request_context*>(userData)->mParser.handle_part_begin(headers);
 }
 
 void MimePartDataCallback(const char *buffer, size_t len, void *userData)
 {
-    reinterpret_cast<request_multipart_parser*>(userData)->handle_part_data(buffer, len);
+    reinterpret_cast<http_server::request_context*>(userData)->mParser.handle_part_data(buffer, len);
 }
 
 void MimePartEndCallback(void *userData)
 {
-    reinterpret_cast<request_multipart_parser*>(userData)->handle_part_end();
+    reinterpret_cast<http_server::request_context*>(userData)->mParser.handle_part_end();
 }
 
 static std::vector<std::string> tokenize(const std::string& s, char c)
@@ -156,14 +156,14 @@ static std::vector<std::string> tokenize(const std::string& s, char c)
 // trim from start (in place)
 static inline void ltrim(std::string &s) {
     s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](int ch) {
-        return !std::isspace(ch);
+        return !std::isspace((unsigned char)ch);
     }));
 }
 
 // trim from end (in place)
 static inline void rtrim(std::string &s) {
     s.erase(std::find_if(s.rbegin(), s.rend(), [](int ch) {
-        return !std::isspace(ch);
+        return !std::isspace((unsigned char)ch);
     }).base(), s.end());
 }
 
@@ -236,36 +236,36 @@ void request_multipart_parser::handle_part_end()
     }
 }
 
-typedef enum {Variable, Value, Hex1, Hex2} State;
+typedef enum {VarName, VarValue, Hex1, Hex2} State;
 static void parse_urlencoded_data(request_params& params, const char* buffer_ptr, size_t buffer_len)
 {
-      State state;
-      std::string param_name, param_value;
-      char *length, c, hexchar = 0; /* Init'ed to stop -Wall */
-      FILE *f = NULL;
-      size_t i, len = buffer_len;
+    State state;
+    std::string param_name, param_value;
+    char c, hexchar = 0; /* Init'ed to stop -Wall */
+    size_t i, len = buffer_len;
 
-      for (state = Variable; len > 0; len--)
-      {
+    for (state = VarName; len > 0; len--)
+    {
         c = *buffer_ptr++;
 
         switch (state)
         {
-        case Variable:				/* Scanning name of var */
+        case VarName:                  /* Scanning name of var */
             if (c == '=')
             {
-                state = Value;
+                state = VarValue;
             }
             else
-            if (isalnum(c))
+            if (isalnum(c) || c == '_' || c == '-' || c == ',' || c == '.' || c == '[' || c == ']')
                 param_name += c;
             break;
 
-        case Value:				/* Scanning a value */
+        case VarValue:                     /* Scanning a value */
             if (c == ';' || c == '&')
             {
                 params.insert(std::make_pair(param_name, param_value));
-                state = Variable;
+                state = VarName;
+                param_name.clear(); param_value.clear();
             }
             else
             if (c == '%')
@@ -278,7 +278,7 @@ static void parse_urlencoded_data(request_params& params, const char* buffer_ptr
             }
             break;
 
-          case Hex1:				/* 1st char after '%' */
+        case Hex1:				/* 1st char after '%' */
             state = Hex2;
             if ('0' <= c && c <= '9')
                 hexchar = c - '0';
@@ -289,10 +289,10 @@ static void parse_urlencoded_data(request_params& params, const char* buffer_ptr
             if ('a' <= c && c <= 'f')
                 hexchar = c - 'a' + 10;
             else
-                state = Value;			/* Error, skip char... */
+                state = VarValue;			/* Error, skip char... */
             break;
 
-          case Hex2:				/* 2nd char after '%' */
+        case Hex2:				/* 2nd char after '%' */
             if ('0' <= c && c <= '9')
                 param_value += char(16 * hexchar + c - '0');
             else
@@ -303,11 +303,13 @@ static void parse_urlencoded_data(request_params& params, const char* buffer_ptr
                 param_value += char(16 * hexchar + c - 'a' + 10);
             else
                 ;					/* Error, skip char... */
-            state = Value;
+            state = VarValue;
             break;
-
         }
     }
+
+    if ((state == VarName || state == VarValue) && !param_name.empty())
+        params.insert({param_name, param_value});
 }
 
 // ------------ http_client --------------
@@ -315,7 +317,7 @@ http_client::http_client(int timeout_in_seconds)
     :mTimeoutInSeconds(timeout_in_seconds)
 {
 #if defined(TARGET_LINUX) || defined(TARGET_OSX)
-    //evthread_use_pthreads();
+    evthread_use_pthreads(); // There is no chance to avoid this; the working thread is dedicated and client requests are initialized in different one.
 #endif
     signal(SIGPIPE, broken_pipe);
 
@@ -359,13 +361,17 @@ http_client::ctx http_client::get(const std::string& url, connection_kind kind, 
     const char* scheme = evhttp_uri_get_scheme(u);
     if (port == -1)
     {
-        if (strstr(scheme, "https"))
+        if (scheme && strstr(scheme, "https") == scheme)
             port = 443;
         else
             port = 80;
     }
 
-    std::pair<std::string, uint16_t> addr = {std::string(evhttp_uri_get_host(u)), static_cast<uint16_t>(port) };
+    const char* host = evhttp_uri_get_host(u);
+    if (!host)
+        return nullptr; // URI can be relative but we need absolute ones
+
+    std::pair<std::string, uint16_t> addr = {std::string(host), static_cast<uint16_t>(port) };
     evhttp_connection* c = find_connection(addr);
 
     if (!c)
@@ -386,7 +392,10 @@ http_client::ctx http_client::get(const std::string& url, connection_kind kind, 
     if (kind == connection_close)
         evhttp_add_header(evhttp_request_get_output_headers(r), "Connection", "Close");
 
-    mRequests[r] = std::pair<response_handler, response_info>(handler, response_info());
+    {
+        std::unique_lock l(mMutex);
+        mRequests[r] = std::pair<response_handler, response_info>(handler, response_info());
+    }
 
     // Run request
     std::string fp = std::string(path ? path : "/") + (query ? std::string("?") + query : std::string());
@@ -394,8 +403,15 @@ http_client::ctx http_client::get(const std::string& url, connection_kind kind, 
     evhttp_uri_free(u); u = nullptr;
 
     if (code)
+    {
+        {
+            std::unique_lock l(mMutex);
+            auto iter = mRequests.find(r);
+            if (iter != mRequests.end())
+                mRequests.erase(iter);
+        }
         return nullptr;
-
+    }
     return r;
 }
 
@@ -658,6 +674,7 @@ void http_server::start()
     {
         evhtp_free(mHttpContext); mHttpContext = nullptr;
         event_base_free(mIoContext); mIoContext = nullptr;
+        event_free(mResponseQueueEvent); mResponseQueueEvent = nullptr;
         return;
     }
 
@@ -671,6 +688,7 @@ void http_server::start()
     {
         evhtp_free(mHttpContext); mHttpContext = nullptr;
         event_base_free(mIoContext); mIoContext = nullptr;
+        event_free(mResponseQueueEvent); mResponseQueueEvent = nullptr;
         return;
     }
 
@@ -712,11 +730,11 @@ void http_server::stop()
     }
     catch(std::exception& e)
     {
-        std::cerr << "Problem when stopping license server: " << e.what() << std::endl;
+        std::cerr << "Http server stop error: " << e.what() << std::endl;
     }
     catch(...)
     {
-        std::cerr << "Unexpected problem when stopping license server. " << std::endl;
+        std::cerr << "Http server stop error: unexpected" << std::endl;
     }
 }
 
@@ -761,16 +779,18 @@ void http_server::worker()
 void http_server::process_write_ready(evhtp_connection_t* conn)
 {
     std::map<void*,void*>::const_iterator conn_iter;
+    void* conn_ctx = nullptr;
     {
         std::unique_lock<std::mutex> l(mConnectionMapMutex);
         conn_iter = mConnectionMap.find(conn);
         if (conn_iter == mConnectionMap.end())
             return;
+        conn_ctx = conn_iter->second;
     }
 
     // Find an request
     std::unique_lock<std::recursive_mutex> lr(mRequestContextsMutex);
-    auto request_iter = mRequestContexts.find(conn_iter->second);
+    auto request_iter = mRequestContexts.find(conn_ctx);
 
     if (request_iter == mRequestContexts.end())
         return;
@@ -793,12 +813,12 @@ void http_server::process_request(evhtp_request *request)
             // Callback is not set now
             mConnectionMap.insert(std::pair<void*, void*>(request->conn, request));
             evhtp_connection_set_hook(request->conn,
-                    evhtp_hook_on_write,
-                    (evhtp_hook)http_server::on_write_ready, this);
+                                      evhtp_hook_on_write,
+                                      (evhtp_hook)http_server::on_write_ready, this);
 
             evhtp_connection_set_hook(request->conn,
-                evhtp_hook_on_connection_fini,
-                (evhtp_hook)http_server::on_conn_finish, this);
+                                      evhtp_hook_on_connection_fini,
+                                      (evhtp_hook)http_server::on_conn_finish, this);
         }
         else
             conn_iter->second = request;
@@ -806,7 +826,7 @@ void http_server::process_request(evhtp_request *request)
 
     mRequestCounter++;
 
-    // Find context structure
+    // Find context structure. ToDo: there is a problem, the concurring finalize request can free this context at all. For now it doesn't happens however...
     request_context& context = find_request_context(request);
     context.mParser.mInfo.mPath = request->uri->path->full ? request->uri->path->full : std::string();
 
@@ -835,127 +855,128 @@ void http_server::process_request(evhtp_request *request)
         evhtp_send_reply(request, 204);
     }
     else
-    if (request->method == htp_method_GET)
-    {
-        if (mHandler)
+        if (request->method == htp_method_GET)
         {
-            request_params params;
+            if (mHandler)
+            {
+                request_params params;
 
-            evhtp_kvs* param_queue = request->uri->query;
-            if (param_queue)
-            {
-                evhtp_kv* param = param_queue->tqh_first;
-                while (param)
-                {
-                    params.insert(std::pair<std::string, std::string>(std::string(param->key ? param->key : ""), std::string(param->val ? param->val : "")));
-                    param = reinterpret_cast<evhtp_kv*>(param->next.tqe_next);
-                }
-            }
-
-            // Call handler
-            context.mParser.mInfo.mParams = params;
-            context.mParser.mInfo.mMethod = Method_GET;
-            mHandler(*this, request, context.mParser.mInfo, ownership);
-        }
-        else
-        {
-            // Send default answer "not implemented"
-            evhtp_send_reply(request, EVHTP_RES_NOTIMPL);
-        }
-    }
-    else
-    if (request->method == htp_method_POST)
-    {
-        if (mHandler)
-        {
-            std::string boundary, content_type;
-            if (context.mParser.mInfo.mHeaders.count("Content-Type"))
-            {
-                auto iter = context.mParser.mInfo.mHeaders.find("Content-Type");
-                if (iter != context.mParser.mInfo.mHeaders.end())
-                {
-                    content_type = iter->second;
-                    if (content_type.find("multipart/form-data") != std::string::npos)
-                    {
-                        std::string::size_type p = content_type.find("boundary=");
-                        if (p != std::string::npos)
-                            boundary = content_type.substr(p + strlen("boundary="));
-                    }
-                }
-            }
-            evbuffer* post_buffer = request->buffer_in;
-            size_t body_size = evbuffer_get_length(post_buffer);
-            char* body = new char[body_size+1];
-            evbuffer_remove(post_buffer, body, body_size);
-            body[body_size] = 0;
-
-            if (boundary.size())
-            {
-                context.mParser.mMultipartReader->setBoundary(boundary);
-                context.mParser.mMultipartReader->feed(body, body_size);
-                if (context.mParser.mMultipartReader->succeeded())
-                {
-                    // Do nothing here
-                }
-            }
-            else
-            if (content_type.find("urlencoded") != std::string::npos)
-            {
-                // Maybe there is parameters in request line ?
                 evhtp_kvs* param_queue = request->uri->query;
                 if (param_queue)
                 {
                     evhtp_kv* param = param_queue->tqh_first;
                     while (param)
                     {
-                        context.mParser.mInfo.mParams.insert(std::pair<std::string, std::string>(std::string(param->key ? param->key : ""), std::string(param->val ? param->val : "")));
+                        params.insert(std::pair<std::string, std::string>(std::string(param->key ? param->key : ""), std::string(param->val ? param->val : "")));
                         param = reinterpret_cast<evhtp_kv*>(param->next.tqe_next);
                     }
                 }
 
-                // Special case to handle uploaded .pcap / .pcapng - used in some of our projects. This violates HTTP protocol rules - but this code already in production.
-                if (body_size > 4)
-                {
-                    uint32_t signature = *reinterpret_cast<uint32_t*>(body);
-                    bool normal_resolution = signature == 0xa1b2c3d4 || signature == 0xd4c3b2a1;
-                    bool ns_resolution = signature == 0xa1b23c4d || signature == 0x4d3cb2a1;
-                    bool ng_flag = signature == 0x0A0D0D0A;
-
-                    if (normal_resolution || ns_resolution || ng_flag)
-                    {
-                        context.mParser.mInfo.mParams.insert(std::make_pair("content", std::string(body, body_size)));
-                        context.mParser.mInfo.mParams.insert(std::make_pair("filename", "1.pcap"));
-                    }
-                    else
-                        parse_urlencoded_data(context.mParser.mInfo.mParams, body, body_size);
-                }
-                else
-                    parse_urlencoded_data(context.mParser.mInfo.mParams, body, body_size);
+                // Call handler
+                context.mParser.mInfo.mParams = params;
+                context.mParser.mInfo.mMethod = Method_GET;
+                mHandler(*this, request, context.mParser.mInfo, ownership);
             }
             else
             {
-                // TODO: Decode uri from body
+                // Send default answer "not implemented"
+                evhtp_send_reply(request, EVHTP_RES_NOTIMPL);
             }
-            delete[] body; body = nullptr;
-
-            context.mParser.mInfo.mMethod = Method_POST;
-            try
-            {
-                mHandler(*this, request, context.mParser.mInfo, ownership);
-            }
-            catch(...)
-            {}
         }
         else
-        {
-            evhtp_send_reply(request, EVHTP_RES_NOTIMPL);
-        }
-    }
-    else
-    {
-        // Send default answer
-        evhtp_send_reply(request, EVHTP_RES_NOTIMPL);
-    }
+            if (request->method == htp_method_POST)
+            {
+                if (mHandler)
+                {
+                    std::string boundary, content_type;
+                    if (context.mParser.mInfo.mHeaders.count("Content-Type"))
+                    {
+                        auto iter = context.mParser.mInfo.mHeaders.find("Content-Type");
+                        if (iter != context.mParser.mInfo.mHeaders.end())
+                        {
+                            content_type = iter->second;
+                            if (content_type.find("multipart/form-data") != std::string::npos)
+                            {
+                                std::string::size_type p = content_type.find("boundary=");
+                                if (p != std::string::npos)
+                                    boundary = content_type.substr(p + strlen("boundary="));
+                            }
+                        }
+                    }
+                    evbuffer* post_buffer = request->buffer_in;
+                    size_t body_size = evbuffer_get_length(post_buffer);
+                    std::vector<char> body(body_size+1, 0);
+                    // = new char[body_size+1];
+                    evbuffer_remove(post_buffer, body.data(), body_size);
+                    body[body_size] = 0;
+
+                    if (boundary.size())
+                    {
+                        context.mParser.mMultipartReader->setBoundary(boundary);
+                        context.mParser.mMultipartReader->feed(body.data(), body_size);
+                        if (context.mParser.mMultipartReader->succeeded())
+                        {
+                            // Do nothing here
+                        }
+                    }
+                    else
+                        if (content_type.find("urlencoded") != std::string::npos)
+                        {
+                            // Maybe there is parameters in request line ?
+                            evhtp_kvs* param_queue = request->uri->query;
+                            if (param_queue)
+                            {
+                                evhtp_kv* param = param_queue->tqh_first;
+                                while (param)
+                                {
+                                    context.mParser.mInfo.mParams.insert(std::pair<std::string, std::string>(std::string(param->key ? param->key : ""), std::string(param->val ? param->val : "")));
+                                    param = reinterpret_cast<evhtp_kv*>(param->next.tqe_next);
+                                }
+                            }
+
+                            // Special case to handle uploaded .pcap / .pcapng - used in some of our projects. This violates HTTP protocol rules - but this code already in production.
+                            if (body_size > 4)
+                            {
+                                uint32_t signature = *reinterpret_cast<uint32_t*>(body.data());
+                                bool normal_resolution = signature == 0xa1b2c3d4 || signature == 0xd4c3b2a1;
+                                bool ns_resolution = signature == 0xa1b23c4d || signature == 0x4d3cb2a1;
+                                bool ng_flag = signature == 0x0A0D0D0A;
+
+                                if (normal_resolution || ns_resolution || ng_flag)
+                                {
+                                    context.mParser.mInfo.mParams.insert(std::make_pair("content", std::string(body.data(), body_size)));
+                                    context.mParser.mInfo.mParams.insert(std::make_pair("filename", "1.pcap"));
+                                }
+                                else
+                                    parse_urlencoded_data(context.mParser.mInfo.mParams, body.data(), body_size);
+                            }
+                            else
+                                parse_urlencoded_data(context.mParser.mInfo.mParams, body.data(), body_size);
+                        }
+                        else
+                        {
+                            // TODO: Decode uri from body
+                        }
+                    body.clear();
+
+                    context.mParser.mInfo.mMethod = Method_POST;
+                    try
+                    {
+                        mHandler(*this, request, context.mParser.mInfo, ownership);
+                    }
+                    catch(...)
+                    {}
+                }
+                else
+                {
+                    evhtp_send_reply(request, EVHTP_RES_NOTIMPL);
+                }
+            }
+            else
+            {
+                // Send default answer
+                evhtp_send_reply(request, EVHTP_RES_NOTIMPL);
+            }
 
     // Remove used parser instance
     if (ownership == ownership_none)
@@ -1071,6 +1092,11 @@ void http_server::set_content_type(ctx ctx, content_type ct)
     evhtp_kv_t* ct_header = evhtp_kvs_find_kv(request->headers_out, "Content-Type");
     if (ct_header)
     {
+        if (ct_header->v_heaped && ct_header->val)
+        {
+            free(ct_header->val);
+            ct_header->val = nullptr;
+        }
         ct_header->val = const_cast<char*>(ct_text);
         ct_header->v_heaped = 0;
     }
@@ -1089,6 +1115,11 @@ void http_server::set_content_type(ctx ctx, const std::string& ct)
     evhtp_kv_t* ct_header = evhtp_kvs_find_kv(request->headers_out, "Content-Type");
     if (ct_header)
     {
+        if (ct_header->v_heaped && ct_header->val)
+        {
+            free(ct_header->val);
+            ct_header->val = nullptr;
+        }
         ct_header->val = strdup(ct.c_str());
         ct_header->v_heaped = 1;
     }
@@ -1119,6 +1150,13 @@ void http_server::send_json(void* ctx, const std::string& body)
     if (!ctx)
         return;
 
+    evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
+    {
+        std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
+        if (mRequestContexts.find(request) == mRequestContexts.end())
+            return;
+    }
+
     set_content_type(ctx, content_type_json);
     set_cors(ctx);
 
@@ -1148,7 +1186,7 @@ void http_server::send_html(void* ctx, const std::string& body)
 
 static bool ends_with(const std::string& v, const std::string& suffix)
 {
-    return v.find(suffix) == v.size() - suffix.length();
+    return v.rfind(suffix) == v.size() - suffix.length();
 }
 
 
@@ -1173,7 +1211,7 @@ static http_server::content_type filename_to_ct(const std::string& path)
 void http_server::send_file(ctx ctx, const std::string& path)
 {
     // Read file content and send
-    std::ifstream input_stream(path);
+    std::ifstream input_stream(path, std::ios::binary);
     if (!input_stream.is_open())
     {
         send_error(ctx, 404, "File not found");
@@ -1182,7 +1220,7 @@ void http_server::send_file(ctx ctx, const std::string& path)
 
     // Read content
     std::string content((std::istreambuf_iterator<char>(input_stream)),
-                         std::istreambuf_iterator<char>());
+                        std::istreambuf_iterator<char>());
 
     set_content_type(ctx, filename_to_ct(path));
     set_cors(ctx);
@@ -1193,6 +1231,9 @@ void http_server::send_file(ctx ctx, const std::string& path)
 
 void http_server::send_error(void *ctx, int code, const std::string &/*reason*/)
 {
+    if (!ctx)
+        return;
+
     evhtp_request* request = reinterpret_cast<evhtp_request*>(ctx);
     {
         std::unique_lock<std::recursive_mutex> l(mRequestContextsMutex);
@@ -1322,7 +1363,7 @@ void http_server::queue_json(ctx ctx, const std::string& body)
     std::string b = body;
     queued_response qr{
         ctx,
-        [this, b](http_server::ctx& ctx)
+                [this, b](http_server::ctx& ctx)
         {
             this->send_json(ctx, b);
         }
@@ -1335,7 +1376,7 @@ void http_server::queue_html(ctx ctx, const std::string& body)
     std::string b = body;
     queued_response qr{
         ctx,
-        [this, b](http_server::ctx& ctx)
+                [this, b](http_server::ctx& ctx)
         {
             this->send_html(ctx, b);
         }
@@ -1348,7 +1389,7 @@ void http_server::queue_error(ctx ctx, int code, const std::string& reason)
     std::string r = reason;
     queued_response qr{
         ctx,
-        [this, code, r](http_server::ctx& ctx)
+                [this, code, r](http_server::ctx& ctx)
         {
             this->send_error(ctx, code, r);
         }

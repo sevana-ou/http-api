@@ -1,5 +1,5 @@
-#ifndef __HTTP_API_H
-#define __HTTP_API_H
+#ifndef HTTP_API_H
+#define HTTP_API_H
 
 #include <string>
 #include <stdint.h>
@@ -228,10 +228,10 @@ private:
     request_expired_handler mExpiredHandler;
     logging_handler mLoggingHandler;
 
-    std::atomic_bool mTerminated;
+    std::atomic_bool mTerminated = {false};
     evhtp* mHttpContext = nullptr;
     size_t mNumberOfThreads = 0;
-    std::atomic_llong mRequestCounter;
+    std::atomic_llong mRequestCounter = {0};
 
     struct queued_response
     {
